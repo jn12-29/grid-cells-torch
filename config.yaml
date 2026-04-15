@@ -44,6 +44,10 @@ training:
   eval_chunk_size: 32
   eval_units_per_page: 128
   eval_pdf_dpi: 100
+  eval_anim_num_traj: 1   # trajectories to animate (taken from the first eval batch)
+  eval_anim_fps: 20       # playback frame rate
+  eval_anim_step: 4       # render every N-th timestep (4 → 4× speed, 1000 steps → 250 frames)
+  eval_anim_workers: 4    # parallel workers (one per trajectory, only matters if num_traj > 1)
 
 visualization:
   spatial_bins: 32

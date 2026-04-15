@@ -34,11 +34,14 @@ from model import GridCellsRNN
 from scores import GridScorer
 from utils import (
     compute_position_mse,
+    decode_position_from_pc_logits,
     get_place_cell_ensembles,
     get_head_direction_ensembles,
     encode_initial_conditions,
     encode_targets,
+    generate_eval_animation,
     get_scores_and_plot_from_ratemaps,
+    plot_hdc_tuning_curves,
     score_ratemaps,
 )
 
@@ -360,9 +363,17 @@ def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNa
 def _evaluate(
     model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, writer=None
 ):
-    """Collect bottleneck activations, compute grid scores, and optionally save a PDF."""
+    """Collect bottleneck activations, compute grid scores, and optionally save PDF + MP4."""
     model_was_training = model.training
     model.eval()
+
+    # Determine whether to save visualisations this eval (PDF + animation).
+    # eval_plot_every=N means "save every N evals"; 0 means never.
+    # epoch is 0 for pre-training eval, then eval_every, 2*eval_every, ...
+    plot_every = getattr(cfg.training, "eval_plot_every", 1)
+    eval_every = cfg.training.eval_every
+    eval_index = epoch // max(1, eval_every)  # 0, 1, 2, ...
+    save_pdf = (plot_every > 0) and (eval_index % plot_every == 0)
 
     ratemap_sums, ratemap_counts = scorer.allocate_ratemap_accumulators(
         cfg.model.nh_bottleneck
@@ -371,11 +382,19 @@ def _evaluate(
     eval_pos_mse_sum = 0.0
     eval_pos_batches = 0
 
+    # Animation data collected from the first batch only.
+    anim_data = None
+    num_anim_traj = getattr(cfg.training, "eval_anim_num_traj", 1)
+
+    # HDC tuning curve accumulators (all batches).
+    hd_list   = []
+    hdc_list  = []
+
     with torch.no_grad():
         for batch in eval_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
-            pc_logits, _, bottleneck, _ = model(
+            pc_logits, hdc_logits, bottleneck, _ = model(
                 init_cond, batch["ego_vel"], training=False
             )
             pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
@@ -388,16 +407,28 @@ def _evaluate(
                 ratemap_counts,
             )
 
+            # Accumulate HDC data for tuning curves (flatten B×T).
+            if save_pdf:
+                hd_np  = batch["target_hd"].detach().cpu().numpy()           # (B, T, 1)
+                hdc_np = torch.softmax(hdc_logits[0], dim=-1).detach().cpu().numpy()  # (B, T, n_hdc)
+                hd_list.append(hd_np.reshape(-1))
+                hdc_list.append(hdc_np.reshape(-1, hdc_np.shape[-1]))
+
+            # Collect animation data from the first batch.
+            if save_pdf and anim_data is None:
+                n_anim = min(num_anim_traj, batch["target_pos"].shape[0])
+                pred_pos_batch = decode_position_from_pc_logits(pc_logits, pc_ens)
+                pc_probs  = torch.softmax(pc_logits[0], dim=-1)
+                hdc_probs = torch.softmax(hdc_logits[0], dim=-1)
+                anim_data = {
+                    "target_pos": batch["target_pos"][:n_anim].detach().cpu().numpy(),
+                    "pred_pos":   pred_pos_batch[:n_anim].detach().cpu().numpy(),
+                    "pc_acts":    pc_probs[:n_anim].detach().cpu().numpy(),
+                    "hdc_acts":   hdc_probs[:n_anim].detach().cpu().numpy(),
+                }
+
     infer_seconds = time.time() - eval_start
     ratemaps = scorer.finalize_ratemaps(ratemap_sums, ratemap_counts)
-
-    # Determine whether to save a PDF this eval.
-    # eval_plot_every=N means "save PDF every N evals"; 0 means never.
-    # epoch is 0 for pre-training eval, then eval_every, 2*eval_every, ...
-    plot_every = getattr(cfg.training, "eval_plot_every", 1)
-    eval_every = cfg.training.eval_every
-    eval_index = epoch // max(1, eval_every)  # 0, 1, 2, ...
-    save_pdf = (plot_every > 0) and (eval_index % plot_every == 0)
 
     score_start = time.time()
     num_workers = getattr(cfg.training, "eval_num_workers", 0)
@@ -418,6 +449,42 @@ def _evaluate(
         )
         score_60 = scores[0]
         score_90 = scores[1]
+
+        # HDC directional tuning curves PDF.
+        logger = logging.getLogger("grid_cells")
+        if hd_list:
+            try:
+                hdc_pdf_path = os.path.join(save_dir, f"hdc_tuning_epoch_{epoch:04d}.pdf")
+                plot_hdc_tuning_curves(
+                    np.concatenate(hd_list),
+                    np.concatenate(hdc_list, axis=0),
+                    n_bins=getattr(cfg.visualization, "directional_bins", 20),
+                    save_path=hdc_pdf_path,
+                    pdf_dpi=getattr(cfg.training, "eval_pdf_dpi", 100),
+                )
+                logger.info("HDC tuning curves saved to %s", hdc_pdf_path)
+            except Exception as exc:
+                logger.warning("HDC tuning curve plot failed: %s", exc)
+
+        # Generate eval animation MP4 alongside the PDF.
+        if anim_data is not None:
+            anim_path = os.path.join(save_dir, f"eval_animation_epoch_{epoch:04d}.mp4")
+            pc_centers = np.concatenate([ens.means for ens in pc_ens], axis=0)
+            try:
+                generate_eval_animation(
+                    anim_data["target_pos"],
+                    anim_data["pred_pos"],
+                    anim_data["pc_acts"],
+                    anim_data["hdc_acts"],
+                    pc_centers,
+                    cfg.task.env_size,
+                    anim_path,
+                    fps=getattr(cfg.training, "eval_anim_fps", 20),
+                    step=getattr(cfg.training, "eval_anim_step", 4),
+                    num_workers=getattr(cfg.training, "eval_anim_workers", 4),
+                )
+            except Exception as exc:
+                logger.warning("eval animation failed: %s", exc)
     else:
         score_60, score_90, _, _, _ = score_ratemaps(
             scorer,
