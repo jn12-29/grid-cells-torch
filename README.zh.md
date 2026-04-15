@@ -48,8 +48,12 @@
 ```bash
 pip install torch numpy scipy matplotlib pyyaml tqdm tensorboard
 
-# optional but required for MP4 outputs
-ffmpeg -version
+# 如果需要导出 MP4，请先安装 ffmpeg
+# Ubuntu / Debian
+sudo apt-get update && sudo apt-get install -y ffmpeg
+
+# macOS
+brew install ffmpeg
 
 # generate train/eval splits plus preview artifacts
 python generate_data.py --visualize --animate

@@ -48,8 +48,12 @@ This repository started as a faithful PyTorch port of DeepMind's official `grid-
 ```bash
 pip install torch numpy scipy matplotlib pyyaml tqdm tensorboard
 
-# optional but required for MP4 outputs
-ffmpeg -version
+# install ffmpeg if you want MP4 outputs
+# Ubuntu / Debian
+sudo apt-get update && sudo apt-get install -y ffmpeg
+
+# macOS
+brew install ffmpeg
 
 # generate train/eval splits plus preview artifacts
 python generate_data.py --visualize --animate
