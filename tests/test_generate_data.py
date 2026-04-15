@@ -27,6 +27,52 @@ def test_generate_dataset_file_writes_npz(tmp_path):
     assert dataset.num_samples == 6
 
 
+def test_generate_dataset_file_writes_progress_preview(tmp_path):
+    """Progress visualisation should be written when requested."""
+    output_path = tmp_path / "train.npz"
+    progress_path = tmp_path / "train_progress.png"
+
+    generate_data.generate_dataset_file(
+        output_path=str(output_path),
+        num_samples=6,
+        seq_len=5,
+        env_size=2.2,
+        velocity_noise=[0.0, 0.0, 0.0],
+        seed=3,
+        progress_output=str(progress_path),
+        progress_every=1,
+    )
+
+    assert progress_path.exists()
+
+
+def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
+    """Animation export should be called with the requested MP4 path."""
+    output_path = tmp_path / "train.npz"
+    anim_path = tmp_path / "train_traj.mp4"
+    calls = []
+
+    def fake_visualize_animation(dataset, save_path, fps=20, max_trajectories=16):
+        calls.append((dataset.num_samples, save_path, fps, max_trajectories))
+        anim_path.write_bytes(b"fake-mp4")
+
+    monkeypatch.setattr(generate_data, "visualize_animation", fake_visualize_animation)
+
+    generate_data.generate_dataset_file(
+        output_path=str(output_path),
+        num_samples=6,
+        seq_len=5,
+        env_size=2.2,
+        velocity_noise=[0.0, 0.0, 0.0],
+        seed=3,
+        animation_output=str(anim_path),
+        animation_fps=12,
+    )
+
+    assert anim_path.exists()
+    assert calls == [(6, str(anim_path), 12, 16)]
+
+
 def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
     """CLI entry point should support writing train and eval files in one run."""
     train_path = tmp_path / "train.npz"
@@ -48,7 +94,15 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
             env_size=None,
             seed=None,
             visualize=False,
+            animate=False,
             vis_output=None,
+            anim_output=None,
+            anim_fps=20,
+            num_workers=1,
+            visualize_progress=False,
+            progress_output=None,
+            eval_progress_output=None,
+            progress_every=4,
             eval_output=str(eval_path),
             eval_num_samples=None,
             eval_seed=None,

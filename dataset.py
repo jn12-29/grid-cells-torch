@@ -17,8 +17,54 @@ Load for training:
 """
 
 import json
+import math
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
+
+
+def _allocate_storage(num_samples: int, seq_len: int) -> dict:
+    """Allocate output arrays for a dataset or chunk."""
+    return {
+        "init_pos": np.empty((num_samples, 2), dtype=np.float32),
+        "init_hd": np.empty((num_samples, 1), dtype=np.float32),
+        "ego_vel": np.empty((num_samples, seq_len, 3), dtype=np.float32),
+        "target_pos": np.empty((num_samples, seq_len, 2), dtype=np.float32),
+        "target_hd": np.empty((num_samples, seq_len, 1), dtype=np.float32),
+    }
+
+
+def _build_sample_seeds(base_seed, num_samples: int) -> np.ndarray:
+    """Build deterministic per-sample seeds so worker count does not change data."""
+    seed_sequence = np.random.SeedSequence(base_seed)
+    return seed_sequence.generate_state(num_samples * 2, dtype=np.uint32).reshape(num_samples, 2)
+
+
+def _generate_chunk_worker(
+    seq_len: int,
+    env_size: float,
+    velocity_noise,
+    start_idx: int,
+    sample_seeds: np.ndarray,
+) -> tuple[int, dict]:
+    """Generate one contiguous chunk of trajectories in a worker process."""
+    dataset = TrajectoryDataset.__new__(TrajectoryDataset)
+    dataset.seq_len = seq_len
+    dataset.env_size = env_size
+    dataset.velocity_noise = tuple(velocity_noise)
+
+    chunk_size = len(sample_seeds)
+    chunk = _allocate_storage(chunk_size, seq_len)
+    for offset, sample_seed in enumerate(sample_seeds):
+        traj = dataset._generate_trajectory(np.random.default_rng(sample_seed))
+        chunk["init_pos"][offset] = traj["init_pos"]
+        chunk["init_hd"][offset] = traj["init_hd"]
+        chunk["ego_vel"][offset] = traj["ego_vel"]
+        chunk["target_pos"][offset] = traj["target_pos"]
+        chunk["target_hd"][offset] = traj["target_hd"]
+
+    return start_idx, chunk
 
 
 class TrajectoryDataset(Dataset):
@@ -53,14 +99,21 @@ class TrajectoryDataset(Dataset):
         env_size: float,
         velocity_noise=(0.0, 0.0, 0.0),
         seed=None,
+        num_workers: int = 1,
+        chunk_size: int = None,
+        progress_callback=None,
     ):
         self.num_samples = num_samples
         self.seq_len = seq_len
         self.env_size = env_size
         self.velocity_noise = tuple(velocity_noise)
 
-        rng = np.random.default_rng(seed)
-        self._data = self._generate_all(rng)
+        self._data = self._generate_all(
+            base_seed=seed,
+            num_workers=num_workers,
+            chunk_size=chunk_size,
+            progress_callback=progress_callback,
+        )
 
     def attach_ensembles(self, pc_ensembles, hdc_ensembles) -> None:
         """Attach ensembles and pre-compute initial-condition encodings.
@@ -168,32 +221,74 @@ class TrajectoryDataset(Dataset):
             "target_hd":  target_hd,
         }
 
-    def _generate_all(self, rng: np.random.Generator) -> dict:
+    def _generate_all(
+        self,
+        base_seed,
+        num_workers: int = 1,
+        chunk_size: int = None,
+        progress_callback=None,
+    ) -> dict:
         """Pre-generate all trajectories and stack them into arrays."""
-        T   = self.seq_len
-        N   = self.num_samples
+        num_workers = max(1, int(num_workers))
+        num_workers = min(num_workers, max(1, self.num_samples))
 
-        init_pos   = np.empty((N, 2),    dtype=np.float32)
-        init_hd    = np.empty((N, 1),    dtype=np.float32)
-        ego_vel    = np.empty((N, T, 3), dtype=np.float32)
-        target_pos = np.empty((N, T, 2), dtype=np.float32)
-        target_hd  = np.empty((N, T, 1), dtype=np.float32)
+        if chunk_size is None:
+            chunk_size = max(1, min(2048, math.ceil(self.num_samples / max(num_workers * 8, 1))))
+        else:
+            chunk_size = max(1, int(chunk_size))
 
-        for i in range(N):
-            traj = self._generate_trajectory(rng)
-            init_pos[i]   = traj["init_pos"]
-            init_hd[i]    = traj["init_hd"]
-            ego_vel[i]    = traj["ego_vel"]
-            target_pos[i] = traj["target_pos"]
-            target_hd[i]  = traj["target_hd"]
+        storage = _allocate_storage(self.num_samples, self.seq_len)
+        sample_seeds = _build_sample_seeds(base_seed, self.num_samples)
+        tasks = []
+        for start_idx in range(0, self.num_samples, chunk_size):
+            end_idx = min(start_idx + chunk_size, self.num_samples)
+            tasks.append((
+                self.seq_len,
+                self.env_size,
+                self.velocity_noise,
+                start_idx,
+                sample_seeds[start_idx:end_idx],
+            ))
 
-        return {
-            "init_pos":   init_pos,
-            "init_hd":    init_hd,
-            "ego_vel":    ego_vel,
-            "target_pos": target_pos,
-            "target_hd":  target_hd,
-        }
+        completed_samples = 0
+
+        def commit_chunk(chunk_index: int, start_idx: int, chunk: dict) -> None:
+            nonlocal completed_samples
+            chunk_count = len(chunk["init_pos"])
+            end_idx = start_idx + chunk_count
+            for key, value in chunk.items():
+                storage[key][start_idx:end_idx] = value
+
+            completed_samples += chunk_count
+            if progress_callback is not None:
+                progress_callback({
+                    "chunk_index": chunk_index,
+                    "num_chunks": len(tasks),
+                    "chunk_start": start_idx,
+                    "chunk_end": end_idx,
+                    "completed_samples": completed_samples,
+                    "total_samples": self.num_samples,
+                    "chunk_data": chunk,
+                })
+
+        if num_workers == 1 or len(tasks) == 1:
+            for chunk_index, task in enumerate(tasks):
+                start_idx, chunk = _generate_chunk_worker(*task)
+                commit_chunk(chunk_index, start_idx, chunk)
+            return storage
+
+        future_to_chunk = {}
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            for chunk_index, task in enumerate(tasks):
+                future = executor.submit(_generate_chunk_worker, *task)
+                future_to_chunk[future] = chunk_index
+
+            for future in as_completed(future_to_chunk):
+                chunk_index = future_to_chunk[future]
+                start_idx, chunk = future.result()
+                commit_chunk(chunk_index, start_idx, chunk)
+
+        return storage
 
     # ------------------------------------------------------------------
     # Dataset interface

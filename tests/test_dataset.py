@@ -63,6 +63,29 @@ def test_without_attach_no_encoded_keys():
     assert "pc_targets_0" not in item
 
 
+def test_parallel_generation_matches_single_worker_output():
+    """Worker count should not change generated trajectories for a fixed seed."""
+    serial_ds = TrajectoryDataset(
+        num_samples=12,
+        seq_len=8,
+        env_size=2.2,
+        velocity_noise=(0.0, 0.0, 0.0),
+        seed=7,
+        num_workers=1,
+    )
+    parallel_ds = TrajectoryDataset(
+        num_samples=12,
+        seq_len=8,
+        env_size=2.2,
+        velocity_noise=(0.0, 0.0, 0.0),
+        seed=7,
+        num_workers=2,
+    )
+
+    for key in ("init_pos", "init_hd", "ego_vel", "target_pos", "target_hd"):
+        assert np.allclose(serial_ds._data[key], parallel_ds._data[key])
+
+
 def test_init_cond_consistent_with_manual_encode():
     """init_cond from dataset matches encode_initial_conditions output."""
     from utils import encode_initial_conditions

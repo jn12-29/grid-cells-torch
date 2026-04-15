@@ -132,6 +132,12 @@ python generate_data.py --output data/train.npz
 # 生成更多数据 + 同时输出可视化 PDF
 python generate_data.py --output data/train.npz --num_samples 100000 --visualize
 
+# 多进程生成 + 周期性输出过程预览图 + 最终 PDF
+python generate_data.py --output data/train.npz --num_workers 8 --visualize_progress --visualize
+
+# 导出运行轨迹的 MP4 动态可视化
+python generate_data.py --output data/train.npz --animate
+
 # 一次生成 train/eval 两个 split（推荐）
 python generate_data.py --output data/train.npz --eval_output data/eval.npz
 
@@ -148,7 +154,7 @@ python generate_data.py \
 
 推荐约定是把训练集保存为 `data/train.npz`，评估集保存为 `data/eval.npz`。默认配置会优先把 `data/eval.npz` 当作固定 eval split 使用。
 
-生成完成后 `data/train.npz` 包含所有轨迹，`data/train_vis.pdf` 是可视化报告（见下节）。
+生成完成后 `data/train.npz` 包含所有轨迹，`data/train_vis.pdf` 是可视化报告（见下节）。如果启用 `--visualize_progress`，生成过程中还会周期性刷新 `data/train_progress.png`，方便在无 GUI 的环境里观察当前覆盖范围、速度分布和生成进度。如果启用 `--animate`，还会额外导出 `data/train_traj.mp4`，展示示例轨迹如何随时间展开。
 
 ### 手动生成并查看轨迹
 
@@ -191,6 +197,22 @@ plt.savefig("trajectory.png")
 | Angular velocity | 角速度分布（应对称，均值约 0） |
 | Head direction rose | 朝向极坐标直方图（应均匀分布） |
 | Velocity–displacement | 速度×dt 与实际位移的散点图（验证数据一致性） |
+
+如果再加上 `--visualize_progress`，脚本会在生成期间额外保存一张持续刷新的 PNG 预览图，展示目前已完成样本的：
+
+- 示例轨迹
+- 位置覆盖热力图
+- 速度与角速度分布
+- 朝向分布
+- 完成比例、吞吐和 ETA
+
+如果加上 `--animate`，脚本还会导出一个 MP4 动画，显示最多 16 条示例轨迹的：
+
+- 路径随时间逐步展开
+- 每条轨迹的当前位置
+- 当前 step 和累计时间
+
+MP4 导出依赖系统里的 `ffmpeg`。
 
 ### 控制数据生成行为
 
@@ -454,6 +476,14 @@ print(f"Grid score 90°: {score_90:.4f}")
 | `--env_size` | config 中的值 | 方形环境边长（米） |
 | `--seed` | config 中的 `neurons_seed` | 随机种子 |
 | `--visualize` | 关闭 | 是否生成可视化 PDF |
+| `--animate` | 关闭 | 是否生成运行轨迹的 MP4 动画 |
+| `--anim_output` | `<output>_traj.mp4` | 轨迹动画 MP4 的保存路径 |
+| `--anim_fps` | `20` | 轨迹动画的帧率 |
+| `--num_workers` | `1` | 轨迹分块生成时使用的进程数 |
+| `--visualize_progress` | 关闭 | 是否在生成期间周期性写出过程预览 PNG |
+| `--progress_output` | `<output>_progress.png` | 主输出文件对应的过程预览图路径 |
+| `--eval_progress_output` | `<eval_output>_progress.png` | eval split 的过程预览图路径 |
+| `--progress_every` | `4` | 每完成多少个 chunk 刷新一次过程预览图 |
 | `--eval_output` | 关闭 | 可选的第二个输出文件，用来同时生成固定评估集 |
 | `--eval_num_samples` | `training.eval_batch_size` | 可选 eval split 的样本数 |
 | `--eval_seed` | `seed + 1` | 可选 eval split 的随机种子 |
