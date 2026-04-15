@@ -13,7 +13,7 @@ import train as train_module
 from dataset import get_dataloader
 from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from model import GridCellsRNN
-from train import get_step_log_interval, resolve_save_dir
+from train import build_optimizer, get_step_log_interval, resolve_save_dir
 
 
 def make_cfg():
@@ -40,8 +40,11 @@ def make_cfg():
         training=SimpleNamespace(
             batch_size=4,
             steps_per_epoch=2,
+            optimizer="rmsprop",
             lr=1e-4,
             momentum=0.9,
+            adamw_betas=[0.9, 0.999],
+            adamw_eps=1e-8,
             weight_decay=1e-5,
             grad_clip=1e-5,
         ),
@@ -123,6 +126,31 @@ def test_step_log_interval_caps_step_scalars_per_epoch():
     assert get_step_log_interval(1000) == 100
     assert get_step_log_interval(95) == 10
     assert get_step_log_interval(9) == 1
+
+
+def test_build_optimizer_defaults_to_rmsprop():
+    """Optimizer builder should preserve the existing RMSprop default."""
+    cfg = make_cfg()
+    model = torch.nn.Linear(3, 2)
+
+    optimizer = build_optimizer(model, cfg)
+
+    assert isinstance(optimizer, torch.optim.RMSprop)
+
+
+def test_build_optimizer_can_switch_to_adamw():
+    """Optimizer builder should support AdamW via config."""
+    cfg = make_cfg()
+    cfg.training.optimizer = "adamw"
+    cfg.training.adamw_betas = [0.8, 0.95]
+    cfg.training.adamw_eps = 1e-6
+    model = torch.nn.Linear(3, 2)
+
+    optimizer = build_optimizer(model, cfg)
+
+    assert isinstance(optimizer, torch.optim.AdamW)
+    assert optimizer.defaults["betas"] == (0.8, 0.95)
+    assert optimizer.defaults["eps"] == 1e-6
 
 
 def test_create_summary_writer_uses_tensorboard_subdir(monkeypatch):

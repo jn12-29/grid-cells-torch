@@ -163,6 +163,31 @@ def create_summary_writer(cfg, logger: logging.Logger):
     return writer
 
 
+def build_optimizer(model, cfg):
+    """Build the configured optimizer for training."""
+    optimizer_name = getattr(cfg.training, "optimizer", "rmsprop").lower()
+
+    if optimizer_name == "rmsprop":
+        return torch.optim.RMSprop(
+            model.parameters(),
+            lr=cfg.training.lr,
+            momentum=cfg.training.momentum,
+            weight_decay=cfg.training.weight_decay,
+        )
+
+    if optimizer_name == "adamw":
+        beta1, beta2 = getattr(cfg.training, "adamw_betas", [0.9, 0.999])
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=cfg.training.lr,
+            betas=(beta1, beta2),
+            eps=getattr(cfg.training, "adamw_eps", 1e-8),
+            weight_decay=cfg.training.weight_decay,
+        )
+
+    raise ValueError(f"Unsupported optimizer: {cfg.training.optimizer}")
+
+
 def load_config(path: str = "config.yaml") -> SimpleNamespace:
     """Load YAML config and return as a nested SimpleNamespace.
 
@@ -218,9 +243,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--training.batch_size", type=int, dest="training__batch_size")
     parser.add_argument("--training.lr", type=float, dest="training__lr")
+    parser.add_argument("--training.optimizer", type=str, dest="training__optimizer")
     parser.add_argument("--training.eval_every", type=int, dest="training__eval_every")
     parser.add_argument("--training.save_dir", type=str, dest="training__save_dir")
     parser.add_argument("--training.run_name", type=str, dest="training__run_name")
+    parser.add_argument(
+        "--training.adamw_betas",
+        type=float,
+        nargs=2,
+        dest="training__adamw_betas",
+    )
+    parser.add_argument("--training.adamw_eps", type=float, dest="training__adamw_eps")
     parser.add_argument(
         "--training.tensorboard_log_every",
         type=int,
@@ -340,6 +373,7 @@ def train(cfg, data_path: str = None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
+    logger.info("Optimizer: %s", getattr(cfg.training, "optimizer", "rmsprop"))
     logger.info("Run directory: %s", cfg.training.save_dir)
     logger.info("Progress bar enabled: %s", getattr(cfg.training, "use_tqdm", True))
     logger.info(
@@ -356,13 +390,8 @@ def train(cfg, data_path: str = None):
     # 2. Create model
     model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model)).to(device)
 
-    # 3. Optimizer: RMSprop
-    optimizer = torch.optim.RMSprop(
-        model.parameters(),
-        lr=cfg.training.lr,
-        momentum=cfg.training.momentum,
-        weight_decay=cfg.training.weight_decay,
-    )
+    # 3. Optimizer
+    optimizer = build_optimizer(model, cfg)
 
     if getattr(cfg.training, "use_tqdm", True) and tqdm is None:
         logger.warning("tqdm is not installed; falling back to plain logs")

@@ -278,14 +278,20 @@ training:
                          # 每步处理一个 batch，共 1000 × 10 = 10000 条轨迹/epoch。
 
   batch_size: 10         # 每个梯度更新步使用的轨迹数。
-                         # 原论文 10，较小 batch 与 RMSprop 配合更稳定。
+                          # 原论文 10，较小 batch 与 RMSprop 配合更稳定。
 
   eval_batch_size: 4000  # 评估时使用的轨迹总数（4000 条）。
-                         # 用于计算 rate map 和网格评分，数量越多越准确。
+                          # 用于计算 rate map 和网格评分，数量越多越准确。
+
+  optimizer: "rmsprop"  # 训练优化器，可选 "rmsprop" 或 "adamw"。
 
   lr: 1.0e-5             # RMSprop 学习率。原论文 1e-5，偏小但训练稳定。
 
   momentum: 0.9          # RMSprop 动量系数。
+
+  adamw_betas: [0.9, 0.999]  # AdamW 的 beta1/beta2，仅 optimizer=adamw 时使用。
+
+  adamw_eps: 1.0e-8      # AdamW 的 epsilon，仅 optimizer=adamw 时使用。
 
   weight_decay: 1.0e-5   # L2 正则化系数，通过 optimizer 的 weight_decay 实现。
 
