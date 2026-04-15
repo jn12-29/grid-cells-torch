@@ -1,4 +1,9 @@
-"""Tests for generate_data helpers and CLI flow."""
+"""Regression tests for dataset generation helpers and CLI flow.
+
+Usage:
+    pytest tests/test_generate_data.py
+    pytest tests/test_generate_data.py -k animation
+"""
 import os
 import sys
 from types import SimpleNamespace

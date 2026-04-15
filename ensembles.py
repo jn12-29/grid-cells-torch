@@ -1,13 +1,14 @@
-"""
-Cell ensemble classes for grid cell navigation model.
+"""Cell-ensemble definitions for place and head-direction supervision.
 
-PyTorch/NumPy reimplementation of the TensorFlow ensembles from:
-  Banino et al., "Vector-based navigation using grid-like representations
-  in artificial agents", Nature 2018.
+These classes reproduce the probabilistic target encodings used by the original
+DeepMind codebase while keeping target generation in NumPy and loss evaluation
+compatible with PyTorch tensors.
 
-All intermediate computations (unnor_logpdf, log_posterior, get_targets,
-get_init) operate in NumPy. The loss() method accepts torch.Tensor
-predictions and returns a torch.Tensor scalar.
+Usage:
+    pc = PlaceCellEnsemble(...)
+    hdc = HeadDirectionCellEnsemble(...)
+    targets = pc.get_targets(target_pos_np)
+    loss = pc.loss(pc_logits, pc_targets)
 """
 
 import numpy as np

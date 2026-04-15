@@ -1,4 +1,8 @@
-"""Tests for scoring and plotting helpers."""
+"""Tests for scoring, chunking, and PDF export helpers.
+
+Usage:
+    pytest tests/test_scores.py
+"""
 import os
 import sys
 

@@ -1,4 +1,9 @@
-"""Tests for TrajectoryDataset encoding features."""
+"""Tests for trajectory generation, encoding, and dataloader behavior.
+
+Usage:
+    pytest tests/test_dataset.py
+    pytest tests/test_dataset.py -k parallel
+"""
 import numpy as np
 import torch
 import pytest

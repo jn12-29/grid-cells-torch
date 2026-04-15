@@ -1,1 +1,5 @@
-"""Test suite for GridCellsRNN model."""
+"""Project test package.
+
+Usage:
+    pytest tests
+"""

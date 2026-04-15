@@ -17,6 +17,18 @@
 #   - Added missing imports: scipy.stats, scipy.ndimage
 #   - Replaced deprecated scipy.ndimage.interpolation.rotate with scipy.ndimage.rotate
 
+"""Grid-score computation and rate-map utilities.
+
+This module adapts the original DeepMind scoring logic to a NumPy/SciPy stack
+and is used to build rate maps, spatial autocorrelograms, and grid scores from
+model activations.
+
+Usage:
+    scorer = GridScorer(nbins=32, coords_range=[[-1.1, 1.1], [-1.1, 1.1]], mask_parameters=[])
+    ratemap = scorer.calculate_ratemap(xs, ys, activations)
+    score_60, score_90, max_60_mask, max_90_mask, sac = scorer.get_scores(ratemap)
+"""
+
 import math
 
 import matplotlib.pyplot as plt

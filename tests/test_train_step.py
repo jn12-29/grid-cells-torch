@@ -1,4 +1,9 @@
-"""Smoke tests for a single training step."""
+"""Smoke tests for the training entrypoint and one-step optimization flow.
+
+Usage:
+    pytest tests/test_train_step.py
+    pytest tests/test_train_step.py -k save_dir
+"""
 import logging
 import os
 import numpy as np

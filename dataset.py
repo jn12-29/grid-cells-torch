@@ -1,19 +1,14 @@
-"""
-Trajectory dataset for grid cell navigation experiments.
+"""Generate, load, and batch synthetic trajectory datasets.
 
-Generates synthetic random-walk trajectories mimicking rodent motion in a
-square environment (Sargolini et al. 2006 motion model), matching the format
-of the original TFRecord dataset used in Banino et al. Nature 2018.
+The dataset matches the trajectory format expected by the grid-cell training
+loop and can optionally attach ensemble-derived initial conditions and targets
+so workers hand back ready-to-train batches.
 
-Workflow
---------
-Generate once and save:
+Usage:
     ds = TrajectoryDataset(num_samples=100_000, seq_len=100, env_size=2.2)
-    ds.save("data/trajectories.npz")
-
-Load for training:
-    ds = TrajectoryDataset.from_file("data/trajectories.npz")
-    loader = DataLoader(ds, batch_size=10, shuffle=True)
+    ds.save("data/train.npz")
+    ds = TrajectoryDataset.from_file("data/train.npz")
+    loader = get_dataloader(cfg, pc_ens=pc_ensembles, hdc_ens=hdc_ensembles)
 """
 
 import json

@@ -1,4 +1,9 @@
-"""Tests for GridCellsRNN model."""
+"""Tests for model shape, determinism, and LSTM equivalence.
+
+Usage:
+    pytest tests/test_model.py
+    pytest tests/test_model.py -k forward
+"""
 import torch
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

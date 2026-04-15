@@ -1,9 +1,14 @@
-"""
-Utility functions for the grid cells PyTorch reimplementation.
+"""Shared helpers for encoding, decoding, plotting, and media export.
 
-PyTorch port of the original TensorFlow utility functions from:
-  Banino et al., "Vector-based navigation using grid-like representations
-  in artificial agents", Nature 2018.
+Most of the training and evaluation pipeline passes through this module: it
+builds ensembles, prepares model inputs and targets, computes decoded position
+metrics, and writes PDFs or MP4 summaries from evaluation outputs.
+
+Usage:
+    pc_ens = get_place_cell_ensembles(cfg)
+    hdc_ens = get_head_direction_ensembles(cfg)
+    init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens)
+    pos_mse = compute_position_mse(pc_logits, target_pos, pc_ens)
 """
 
 from concurrent.futures import ProcessPoolExecutor, as_completed

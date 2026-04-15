@@ -2,12 +2,12 @@
 
 [🌐 中文](README.zh.md)
 
-Faithful PyTorch reimplementation of `google-deepmind/grid-cells`, later extended with richer data generation, evaluation, visualization, logging, and experiment workflow.
+A faithful PyTorch port of `google-deepmind/grid-cells`, later expanded into a more practical workflow for data generation, evaluation, visualization, logging, and analysis.
 
 ## ✨ Results
 
 Reference run: `results/20260416-040934`, snapshot at `epoch 12`.
-Publishable README assets are mirrored under `docs/assets/readme/`.
+README-safe assets are mirrored under `docs/assets/readme/`.
 
 | Metric | Value |
 |---|---:|
@@ -24,13 +24,13 @@ Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
 ![PDF 1 page 1](docs/assets/readme/rates_and_sac_epoch_0012-1.png)
 ![PDF 1 page 2](docs/assets/readme/rates_and_sac_epoch_0012-2.png)
 
-## 🚀 Extensions Beyond The Official Repo
+## 🚀 Beyond The Official Repo
 
-- Pre-generated `train/eval` datasets with on-the-fly fallback.
-- Compact `train.log` plus TensorBoard logging.
+- Pre-generated `train/eval` datasets, with on-the-fly fallback.
+- Compact `train.log` and TensorBoard logging.
 - Decoded-position metric `pos_mse` for training and evaluation.
-- Paginated rate-map PDFs, HDC tuning PDFs, and eval animation MP4s.
-- CLI-driven data generation, visualization, and experiment management.
+- Paginated rate-map PDFs, HDC tuning PDFs, and evaluation MP4s.
+- CLI-oriented data generation, visualization, and experiment management.
 
 ## 📚 References
 
@@ -41,7 +41,7 @@ Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
 
 ## 🧭 Overview
 
-This repository started as a faithful PyTorch port of DeepMind's official `grid-cells` codebase. It was then extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, MP4 animations, TensorBoard logging, a decoded-position metric (`pos_mse`), and a more complete CLI-driven workflow for reproducible experiments.
+This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, MP4 animations, TensorBoard logging, a decoded-position metric (`pos_mse`), and a more complete CLI workflow for reproducible experiments.
 
 ## ⚡ Quick Start
 
@@ -60,6 +60,9 @@ python generate_data.py --visualize --animate
 
 # train with the generated dataset
 python train.py
+
+# or print the common command list
+bash run_scripts.sh
 
 # inspect metrics
 tensorboard --logdir results
@@ -85,6 +88,7 @@ If `data/train.npz` is missing, `train.py` falls back to on-the-fly trajectory g
 
 ```text
 grid-cells-torch/
+├── docs/assets/readme/
 ├── config.yaml
 ├── generate_data.py
 ├── train.py
@@ -101,6 +105,12 @@ grid-cells-torch/
 
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - `generate_data.py` can export `.npz`, PDF summaries, and MP4 animations in one workflow.
+- `run_scripts.sh` prints a compact list of common train, generate, and TensorBoard commands.
 - The current default config is tuned for the expanded engineering workflow, not a line-by-line lockstep copy of the original hyperparameters.
+- README media is mirrored from selected run outputs into `docs/assets/readme/` so the landing page does not depend on ignored `results/` files.
 
 </details>
+
+## 🙏 Acknowledgements
+
+This project was developed with substantial help from Claude Code (Claude Sonnet 4.6) and OpenCode (GPT-5.4). The main development work took about one day and used four Claude Code Pro sessions plus two GPT Plus sessions, with a notably fast iteration cycle.

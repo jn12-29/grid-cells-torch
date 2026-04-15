@@ -1,17 +1,13 @@
-"""
-Grid Cells RNN model — PyTorch reimplementation.
+"""Define the core recurrent model used by this repository.
 
-Corresponds to the TF/Sonnet model in Banino et al., Nature 2018.
+`GridCellsRNN` mirrors the original DeepMind architecture: initial-condition
+codes seed an LSTM, velocity drives recurrent updates, and bottleneck features
+feed place-cell and head-direction-cell prediction heads.
 
-Architecture:
-  init_cond (B, init_cond_size)
-      -> two independent Linear layers -> LSTM initial h and c
-
-  velocity (B, T, 3)
-      -> nn.LSTM(input=3, hidden=nh_lstm, batch_first=True)  [cuDNN fused kernel]
-      -> Linear(nh_lstm, nh_bottleneck, bias=False)   [bottleneck, no activation]
-      -> Dropout(dropout_rate)                         [only during training]
-      -> per-ensemble Linear heads                     [no activation]
+Usage:
+    from model import GridCellsRNN
+    model = GridCellsRNN(pc_ensembles, hdc_ensembles)
+    pc_logits, hdc_logits, bottleneck, lstm_acts = model(init_cond, ego_vel)
 """
 
 import math

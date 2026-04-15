@@ -3,3 +3,5 @@
 - `README.md` is the default English landing page.
 - `README.zh.md` is the Chinese mirror and must keep the same structure and content as `README.md`, differing only by language.
 - Any README media intended for publication should live under `docs/assets/readme/`, not under `results/`.
+- Python modules should keep a current top-of-file docstring describing purpose and basic usage.
+- `run_scripts.sh` is the shell entrypoint for common workflows and should keep its built-in help text up to date.

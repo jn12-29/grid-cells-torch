@@ -1,4 +1,8 @@
-"""Tests for encoding/decoding utility helpers."""
+"""Tests for encoding, decoding, and metric helpers.
+
+Usage:
+    pytest tests/test_utils.py
+"""
 import os
 import sys
 

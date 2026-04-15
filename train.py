@@ -1,9 +1,14 @@
-"""
-Training script for the Grid Cells PyTorch reimplementation.
+"""Train the grid-cells PyTorch model and export run artifacts.
 
-PyTorch port of the original TensorFlow training loop from:
-  Banino et al., "Vector-based navigation using grid-like representations
-  in artificial agents", Nature 2018.
+This is the main experiment entrypoint. It loads config, builds datasets and
+ensembles, runs training and evaluation, and writes logs, TensorBoard data,
+PDF summaries, and optional MP4 outputs under `results/`.
+
+Usage:
+    python train.py
+    python train.py --config config.yaml
+    python train.py --training.epochs 20 --training.batch_size 64
+    CUDA_VISIBLE_DEVICES=0 python train.py --run-name debug
 """
 
 import argparse

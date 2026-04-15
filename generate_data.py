@@ -1,19 +1,14 @@
-"""
-Generate and optionally visualize trajectory data for grid cell training.
+"""Generate trajectory datasets and optional preview artifacts.
 
-Usage
------
-# Generate default train/eval splits from config
-python generate_data.py
+This script materializes train and eval `.npz` files from `config.yaml` and can
+optionally export quick-look PDFs or MP4 animations for inspection.
 
-# Visualize
-python generate_data.py --visualize  --animate
-
-# Generate a smaller evaluation set only
-python generate_data.py --num_samples 4000 --train_only
-
-# Use a custom config
-python generate_data.py --config my_config.yaml
+Usage:
+    python generate_data.py
+    python generate_data.py --visualize --animate
+    python generate_data.py --output data/train_small.npz --num_samples 4000
+    python generate_data.py --train_only --output data/train_only.npz
+    python generate_data.py --config my_config.yaml
 """
 
 import argparse
