@@ -11,7 +11,7 @@ PyTorch 重构版本，复现 DeepMind 2018 年 Nature 论文：
 ## 环境依赖
 
 ```bash
-pip install torch numpy scipy matplotlib pyyaml
+pip install torch numpy scipy matplotlib pyyaml tqdm tensorboard
 ```
 
 Python ≥ 3.8，PyTorch ≥ 2.0。
@@ -45,7 +45,15 @@ python generate_data.py --output data/train.npz --visualize
 
 # 第二步：用保存的数据训练（每 epoch 直接从文件加载，无需重复生成）
 python train.py --data_path data/train.npz
+
+# 第三步：启动 TensorBoard 查看 loss / grid score
+tensorboard --logdir results
 ```
+
+训练默认会把所有输出写到 `results/<timestamp>/`，例如 `results/20260415-153000/`。该目录下会包含：
+1. `train.log`：精简后的训练日志（仅保留启动、epoch 汇总、eval 汇总）
+2. `tensorboard/`：TensorBoard event 文件
+3. `rates_and_sac_epoch_XXXX.pdf`：评估可视化 PDF
 
 使用 `--data_path` 时，训练路径会启用当前实现里的几项性能优化：
 1. `model.py` 使用 `nn.LSTM(batch_first=True)`，不再手写 `LSTMCell` 时间循环。
@@ -71,6 +79,9 @@ python train.py --task.n_pc 512
 # 指定保存目录
 python train.py --training.save_dir /data/results/run1
 
+# 给 run 加一个更易识别的名字
+python train.py --training.run_name baseline_small
+
 # 使用自定义配置文件
 python train.py --config my_config.yaml
 ```
@@ -82,6 +93,7 @@ from train import load_config, train
 
 cfg = load_config("config.yaml")
 cfg.training.epochs = 200          # 直接修改配置字段
+cfg.training.run_name = "paper-repro"
 train(cfg)
 ```
 
@@ -282,10 +294,49 @@ training:
                          # 原论文使用极小的裁剪值（1e-5）以确保训练稳定性。
 
   eval_every: 2          # 每隔几个 epoch 评估一次（计算网格评分 + 生成 PDF）。
-                         # 评估比较耗时，建议设为 5~10 以加速实验。
+                          # 评估比较耗时，建议设为 5~10 以加速实验。
 
-  save_dir: "./results"  # 评估 PDF 的保存目录（自动创建）。
-                         # 文件命名格式：rates_and_sac_epoch_XXXX.pdf
+  save_dir: "./results"  # 训练输出根目录。
+                          # 默认会自动扩展为 ./results/<timestamp>/。
+
+  run_name: null         # 可选的 run 名字。
+                         # 若设置，则目录会变成 ./results/<timestamp>_<run_name>/。
+
+  timestamp_save_dir: true  # 是否自动为每次训练创建时间戳子目录。
+
+  use_tqdm: true         # 是否在控制台显示进度条。
+                         # step 级 loss 默认只在进度条中实时显示，不写入 train.log。
+
+  use_tensorboard: true  # 是否写入 TensorBoard 标量。
+
+  tensorboard_log_every: 0  # step 标量写入间隔。
+                            # 0 表示自动计算：每个 epoch 最多记录 10 次 step loss。
+```
+
+---
+
+## 训练输出
+
+默认情况下，每次训练都会生成独立的 run 目录，避免不同实验互相覆盖：
+
+```text
+results/
+└── 20260415-153000_baseline_small/
+    ├── train.log
+    ├── tensorboard/
+    └── rates_and_sac_epoch_0000.pdf
+```
+
+日志与可观测性的行为如下：
+1. `train.log` 只记录关键摘要，不再把每个 step 都写进文件
+2. 控制台通过 `tqdm` 实时显示当前 `loss` 和 epoch 内平均 `avg`
+3. TensorBoard 记录 `train/loss_step`、`train/loss_mean`、`train/loss_std`、`train/epoch_seconds`、`eval/grid_score_60_max`、`eval/grid_score_90_max`
+4. `train/loss_step` 的默认采样频率会自动计算，保证每个 epoch 平均最多写入 10 个 step 标量点
+
+常用查看命令：
+
+```bash
+tensorboard --logdir results
 ```
 
 ---
@@ -337,9 +388,11 @@ training:
 
 输出示例：
 ```
-Epoch    2 | loss mean=4.8246 std=0.0071
-  grid_score_60 max=0.35  grid_score_90 max=0.84
+2026-04-15 15:30:00  INFO  epoch=   2  loss mean=4.8246  std=0.0071  seconds=18.4
+2026-04-15 15:30:08  INFO  eval epoch=2  grid_score_60 max=0.35  grid_score_90 max=0.84
 ```
+
+训练过程中，step 级 loss 会显示在 `tqdm` 进度条里，而不是持续刷到日志文件中。
 
 `grid_score_60 > 0.3` 表明对应神经元已涌现出类似六边形网格的响应模式。
 
@@ -400,7 +453,8 @@ python train.py \
     --training.epochs 50 \
     --training.steps_per_epoch 200 \
     --training.eval_every 10 \
-    --training.save_dir ./results_quick
+    --training.save_dir ./results_quick \
+    --training.run_name smoke
 ```
 
 ### 复现论文结果（约数小时，需要 GPU）

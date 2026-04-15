@@ -6,14 +6,28 @@ PyTorch port of the original TensorFlow training loop from:
   in artificial agents", Nature 2018.
 """
 
-import logging
-import os
-import yaml
 import argparse
+import logging
+import math
+import os
+import time
+from datetime import datetime
 from types import SimpleNamespace
+
+import yaml
 
 import numpy as np
 import torch
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ModuleNotFoundError:
+    SummaryWriter = None
+
+try:
+    from tqdm.auto import tqdm
+except ModuleNotFoundError:
+    tqdm = None
 
 from dataset import get_dataloader
 from model import GridCellsRNN
@@ -31,15 +45,33 @@ from utils import (
 # Logging
 # ---------------------------------------------------------------------------
 
+def resolve_save_dir(
+    base_dir: str,
+    timestamp_save_dir: bool = True,
+    run_name: str = None,
+    now: datetime = None,
+) -> str:
+    """Resolve the final run directory, optionally nesting under a timestamp."""
+    if not timestamp_save_dir:
+        return base_dir
+
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    run_suffix = f"{stamp}_{run_name}" if run_name else stamp
+    return os.path.join(base_dir, run_suffix)
+
+
 def setup_logger(log_dir: str) -> logging.Logger:
     """Configure a logger that writes to stdout and to a file in log_dir."""
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "train.log")
 
     logger = logging.getLogger("grid_cells")
-    logger.setLevel(logging.DEBUG)
-    if logger.handlers:
-        return logger  # already configured (e.g. called twice)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
 
     fmt = logging.Formatter("%(asctime)s  %(levelname)s  %(message)s",
                             datefmt="%Y-%m-%d %H:%M:%S")
@@ -52,7 +84,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
 
     # File handler
     fh = logging.FileHandler(log_path)
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
@@ -70,6 +102,60 @@ def _dict_to_namespace(d: dict) -> SimpleNamespace:
     for k, v in d.items():
         setattr(ns, k, _dict_to_namespace(v) if isinstance(v, dict) else v)
     return ns
+
+
+def _namespace_to_dict(obj):
+    """Recursively convert a SimpleNamespace config back to plain dicts."""
+    if isinstance(obj, SimpleNamespace):
+        return {k: _namespace_to_dict(v) for k, v in vars(obj).items()}
+    if isinstance(obj, dict):
+        return {k: _namespace_to_dict(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_namespace_to_dict(v) for v in obj]
+    return obj
+
+
+def _str2bool(value):
+    """Parse common textual boolean values for CLI overrides."""
+    if isinstance(value, bool):
+        return value
+
+    normalized = value.lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
+
+def get_step_log_interval(num_steps: int, max_logs_per_epoch: int = 10) -> int:
+    """Return a sampling interval that keeps step logs under the cap."""
+    if num_steps <= 0:
+        return 1
+    return max(1, math.ceil(num_steps / max_logs_per_epoch))
+
+
+def create_summary_writer(cfg, logger: logging.Logger):
+    """Create a TensorBoard writer when requested and available."""
+    if not getattr(cfg.training, "use_tensorboard", True):
+        return None
+
+    if SummaryWriter is None:
+        logger.warning(
+            "TensorBoard disabled because 'tensorboard' is not installed. "
+            "Install it with: pip install tensorboard"
+        )
+        return None
+
+    log_dir = os.path.join(cfg.training.save_dir, "tensorboard")
+    writer = SummaryWriter(log_dir=log_dir)
+    writer.add_text(
+        "run/config",
+        "```yaml\n" + yaml.safe_dump(_namespace_to_dict(cfg), sort_keys=False) + "\n```",
+        0,
+    )
+    logger.info("TensorBoard logging to %s", log_dir)
+    return writer
 
 
 def load_config(path: str = "config.yaml") -> SimpleNamespace:
@@ -120,6 +206,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--training.lr", type=float, dest="training__lr")
     parser.add_argument("--training.eval_every", type=int, dest="training__eval_every")
     parser.add_argument("--training.save_dir", type=str, dest="training__save_dir")
+    parser.add_argument("--training.run_name", type=str, dest="training__run_name")
+    parser.add_argument("--training.tensorboard_log_every", type=int,
+                        dest="training__tensorboard_log_every")
+    parser.add_argument("--training.timestamp_save_dir", type=_str2bool,
+                        dest="training__timestamp_save_dir")
+    parser.add_argument("--training.use_tqdm", type=_str2bool,
+                        dest="training__use_tqdm")
+    parser.add_argument("--training.use_tensorboard", type=_str2bool,
+                        dest="training__use_tensorboard")
 
     return parser.parse_args()
 
@@ -138,7 +233,7 @@ def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNa
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch):
+def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=None):
     """Collect bottleneck activations, compute grid scores, and save a PDF."""
     model_was_training = model.training
     model.eval()
@@ -169,6 +264,10 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch):
     logger.info("eval epoch=%d  grid_score_60 max=%.4f  grid_score_90 max=%.4f",
                 epoch, scores[0].max(), scores[1].max())
 
+    if writer is not None:
+        writer.add_scalar("eval/grid_score_60_max", float(scores[0].max()), epoch)
+        writer.add_scalar("eval/grid_score_90_max", float(scores[1].max()), epoch)
+
     if model_was_training:
         model.train()
 
@@ -179,10 +278,18 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch):
 
 def train(cfg, data_path: str = None):
     """Run the full training loop described in Banino et al., Nature 2018."""
+    cfg.training.save_dir = resolve_save_dir(
+        cfg.training.save_dir,
+        timestamp_save_dir=getattr(cfg.training, "timestamp_save_dir", True),
+        run_name=getattr(cfg.training, "run_name", None),
+    )
     logger = setup_logger(cfg.training.save_dir)
+    writer = create_summary_writer(cfg, logger)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
+    logger.info("Run directory: %s", cfg.training.save_dir)
+    logger.info("Progress bar enabled: %s", getattr(cfg.training, "use_tqdm", True))
 
     # 1. Create ensembles
     pc_ens = get_place_cell_ensembles(cfg)
@@ -201,6 +308,9 @@ def train(cfg, data_path: str = None):
 
     scaler = torch.amp.GradScaler(device=device.type, enabled=(device.type == "cuda"))
     logger.info("AMP enabled: %s", device.type == "cuda")
+
+    if getattr(cfg.training, "use_tqdm", True) and tqdm is None:
+        logger.warning("tqdm is not installed; falling back to plain logs")
 
     # 4. GridScorer for evaluation
     starts = [0.2] * 10
@@ -230,57 +340,105 @@ def train(cfg, data_path: str = None):
     else:
         _fixed_loader = None
 
-    for epoch in range(cfg.training.epochs):
-        # Use pre-generated data if provided, otherwise generate fresh each epoch
-        dataloader = _fixed_loader if _fixed_loader is not None else get_dataloader(cfg)
-        model.train()
-        loss_acc = []
+    global_step = 0
 
-        for step, batch in enumerate(dataloader):
-            optimizer.zero_grad()
-
-            batch = {
-                k: v.to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in batch.items()
-            }
-
-            if "init_cond" in batch:
-                init_cond = batch["init_cond"].float()
-                pc_targets = [batch[f"pc_targets_{i}"] for i in range(len(pc_ens))]
-                hdc_targets = [batch[f"hdc_targets_{i}"] for i in range(len(hdc_ens))]
-            else:
-                init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
-                pc_targets, hdc_targets = encode_targets(batch, pc_ens, hdc_ens)
-
-            with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
-                pc_logits, hdc_logits, _, _ = model(
-                    init_cond, batch["ego_vel"], training=True
-                )
-
-                loss = sum(
-                    ens.loss(logits, targets)
-                    for ens, logits, targets in zip(pc_ens, pc_logits, pc_targets)
-                )
-                loss += sum(
-                    ens.loss(logits, targets)
-                    for ens, logits, targets in zip(hdc_ens, hdc_logits, hdc_targets)
-                )
-
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_value_(
-                model.parameters(), cfg.training.grad_clip
+    try:
+        for epoch in range(cfg.training.epochs):
+            # Use pre-generated data if provided, otherwise generate fresh each epoch
+            dataloader = _fixed_loader if _fixed_loader is not None else get_dataloader(cfg)
+            num_steps = len(dataloader)
+            step_log_interval = max(
+                1,
+                getattr(cfg.training, "tensorboard_log_every", 0)
+                or get_step_log_interval(num_steps),
             )
-            scaler.step(optimizer)
-            scaler.update()
-            loss_acc.append(loss.item())
-            logger.debug("epoch=%4d  step=%4d  loss=%.4f", epoch, step, loss.item())
+            model.train()
+            loss_acc = []
+            epoch_start = time.time()
 
-        logger.info("epoch=%4d  loss mean=%.4f  std=%.4f",
-                    epoch, np.mean(loss_acc), np.std(loss_acc))
+            use_tqdm = getattr(cfg.training, "use_tqdm", True) and tqdm is not None
+            progress = tqdm(
+                dataloader,
+                total=num_steps,
+                desc=f"epoch {epoch + 1}/{cfg.training.epochs}",
+                leave=False,
+                dynamic_ncols=True,
+            ) if use_tqdm else dataloader
 
-        if epoch % cfg.training.eval_every == 0:
-            _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch)
+            for step, batch in enumerate(progress):
+                optimizer.zero_grad()
+
+                batch = {
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+
+                if "init_cond" in batch:
+                    init_cond = batch["init_cond"].float()
+                    pc_targets = [batch[f"pc_targets_{i}"] for i in range(len(pc_ens))]
+                    hdc_targets = [batch[f"hdc_targets_{i}"] for i in range(len(hdc_ens))]
+                else:
+                    init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
+                    pc_targets, hdc_targets = encode_targets(batch, pc_ens, hdc_ens)
+
+                with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+                    pc_logits, hdc_logits, _, _ = model(
+                        init_cond, batch["ego_vel"], training=True
+                    )
+
+                    loss = sum(
+                        ens.loss(logits, targets)
+                        for ens, logits, targets in zip(pc_ens, pc_logits, pc_targets)
+                    )
+                    loss += sum(
+                        ens.loss(logits, targets)
+                        for ens, logits, targets in zip(hdc_ens, hdc_logits, hdc_targets)
+                    )
+
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_value_(
+                    model.parameters(), cfg.training.grad_clip
+                )
+                scaler.step(optimizer)
+                scaler.update()
+
+                loss_value = loss.item()
+                loss_acc.append(loss_value)
+                global_step += 1
+
+                if use_tqdm:
+                    progress.set_postfix(
+                        loss=f"{loss_value:.4f}",
+                        avg=f"{np.mean(loss_acc):.4f}",
+                    )
+
+                should_log_step = ((step + 1) % step_log_interval == 0) or (step == num_steps - 1)
+                if writer is not None and should_log_step:
+                    writer.add_scalar("train/loss_step", loss_value, global_step)
+
+            epoch_mean = float(np.mean(loss_acc))
+            epoch_std = float(np.std(loss_acc))
+            epoch_time = time.time() - epoch_start
+
+            logger.info(
+                "epoch=%4d  loss mean=%.4f  std=%.4f  seconds=%.1f",
+                epoch,
+                epoch_mean,
+                epoch_std,
+                epoch_time,
+            )
+
+            if writer is not None:
+                writer.add_scalar("train/loss_mean", epoch_mean, epoch)
+                writer.add_scalar("train/loss_std", epoch_std, epoch)
+                writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
+
+            if epoch % cfg.training.eval_every == 0:
+                _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=writer)
+    finally:
+        if writer is not None:
+            writer.close()
 
 
 # ---------------------------------------------------------------------------

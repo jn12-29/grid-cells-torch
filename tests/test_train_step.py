@@ -1,14 +1,19 @@
 """Smoke tests for a single training step."""
+import logging
+import os
 import numpy as np
 import torch
-import sys, os
+import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from datetime import datetime
 from types import SimpleNamespace
 
+import train as train_module
 from dataset import get_dataloader
 from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from model import GridCellsRNN
+from train import get_step_log_interval, resolve_save_dir
 
 
 def make_cfg():
@@ -91,3 +96,59 @@ def test_training_step_with_preencoded_batch():
     scaler.update()
 
     assert np.isfinite(loss.item())
+
+
+def test_resolve_save_dir_appends_timestamp_directory():
+    """Timestamped runs should be nested under the configured base directory."""
+    save_dir = resolve_save_dir(
+        "./results",
+        timestamp_save_dir=True,
+        run_name=None,
+        now=datetime(2026, 4, 15, 15, 30, 0),
+    )
+
+    assert os.path.normpath(save_dir) == os.path.normpath("./results/20260415-153000")
+
+
+def test_resolve_save_dir_can_keep_base_directory():
+    """Disabling timestamps should preserve the original save_dir."""
+    save_dir = resolve_save_dir(
+        "./results",
+        timestamp_save_dir=False,
+        run_name="debug",
+        now=datetime(2026, 4, 15, 15, 30, 0),
+    )
+
+    assert os.path.normpath(save_dir) == os.path.normpath("./results")
+
+
+def test_step_log_interval_caps_step_scalars_per_epoch():
+    """Automatic TensorBoard sampling should emit at most ten points per epoch."""
+    assert get_step_log_interval(1000) == 100
+    assert get_step_log_interval(95) == 10
+    assert get_step_log_interval(9) == 1
+
+
+def test_create_summary_writer_uses_tensorboard_subdir(monkeypatch):
+    """TensorBoard logs should be written under <save_dir>/tensorboard."""
+    calls = {}
+
+    class DummyWriter:
+        def __init__(self, log_dir):
+            calls["log_dir"] = log_dir
+
+        def add_text(self, *args):
+            calls["tag"] = args[0]
+
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(),
+        model=SimpleNamespace(),
+        training=SimpleNamespace(save_dir="./results/run1", use_tensorboard=True),
+    )
+    monkeypatch.setattr(train_module, "SummaryWriter", DummyWriter)
+
+    writer = train_module.create_summary_writer(cfg, logging.getLogger("test_writer"))
+
+    assert isinstance(writer, DummyWriter)
+    assert os.path.normpath(calls["log_dir"]) == os.path.normpath("./results/run1/tensorboard")
+    assert calls["tag"] == "run/config"

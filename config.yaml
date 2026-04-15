@@ -28,3 +28,8 @@ training:
   grad_clip: 1.0e-5
   eval_every: 2
   save_dir: "./results"
+  run_name: null
+  timestamp_save_dir: true
+  use_tqdm: true
+  use_tensorboard: true
+  tensorboard_log_every: 0
