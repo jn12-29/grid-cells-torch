@@ -346,6 +346,26 @@ def parse_args() -> argparse.Namespace:
         type=int,
         dest="training__eval_pdf_dpi",
     )
+    parser.add_argument(
+        "--visualization.anim_num_traj",
+        type=int,
+        dest="visualization__anim_num_traj",
+    )
+    parser.add_argument(
+        "--visualization.anim_fps",
+        type=int,
+        dest="visualization__anim_fps",
+    )
+    parser.add_argument(
+        "--visualization.anim_step",
+        type=int,
+        dest="visualization__anim_step",
+    )
+    parser.add_argument(
+        "--visualization.anim_workers",
+        type=int,
+        dest="visualization__anim_workers",
+    )
 
     return parser.parse_args()
 
@@ -358,6 +378,24 @@ def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNa
         section, attr = key.split("__", 1)
         setattr(getattr(cfg, section), attr, value)
     return cfg
+
+
+def _get_animation_setting(cfg: SimpleNamespace, name: str, default):
+    """Resolve unified animation config, with fallback to legacy eval keys."""
+    vis_cfg = getattr(cfg, "visualization", None)
+    if vis_cfg is not None and hasattr(vis_cfg, name):
+        return getattr(vis_cfg, name)
+
+    legacy_name = {
+        "anim_num_traj": "eval_anim_num_traj",
+        "anim_fps": "eval_anim_fps",
+        "anim_step": "eval_anim_step",
+        "anim_workers": "eval_anim_workers",
+    }[name]
+    training_cfg = getattr(cfg, "training", None)
+    if training_cfg is not None and hasattr(training_cfg, legacy_name):
+        return getattr(training_cfg, legacy_name)
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +427,7 @@ def _evaluate(
 
     # Animation data collected from the first batch only.
     anim_data = None
-    num_anim_traj = getattr(cfg.training, "eval_anim_num_traj", 1)
+    num_anim_traj = int(_get_animation_setting(cfg, "anim_num_traj", 4))
 
     # HDC tuning curve accumulators (all batches).
     hd_list   = []
@@ -423,13 +461,17 @@ def _evaluate(
             if save_pdf and anim_data is None:
                 n_anim = min(num_anim_traj, batch["target_pos"].shape[0])
                 pred_pos_batch = decode_position_from_pc_logits(pc_logits, pc_ens)
-                pc_probs  = torch.softmax(pc_logits[0], dim=-1)
-                hdc_probs = torch.softmax(hdc_logits[0], dim=-1)
+                pc_probs = torch.cat(
+                    [torch.softmax(logits, dim=-1) for logits in pc_logits], dim=-1
+                )
+                hdc_probs = torch.cat(
+                    [torch.softmax(logits, dim=-1) for logits in hdc_logits], dim=-1
+                )
                 anim_data = {
                     "target_pos": batch["target_pos"][:n_anim].detach().cpu().numpy(),
-                    "pred_pos":   pred_pos_batch[:n_anim].detach().cpu().numpy(),
-                    "pc_acts":    pc_probs[:n_anim].detach().cpu().numpy(),
-                    "hdc_acts":   hdc_probs[:n_anim].detach().cpu().numpy(),
+                    "pred_pos": pred_pos_batch[:n_anim].detach().cpu().numpy(),
+                    "pc_acts": pc_probs[:n_anim].detach().cpu().numpy(),
+                    "hdc_acts": hdc_probs[:n_anim].detach().cpu().numpy(),
                 }
 
     infer_seconds = time.time() - eval_start
@@ -475,6 +517,7 @@ def _evaluate(
         if anim_data is not None:
             anim_path = os.path.join(save_dir, f"eval_animation_epoch_{epoch:04d}.mp4")
             pc_centers = np.concatenate([ens.means for ens in pc_ens], axis=0)
+            hdc_centers = np.concatenate([ens.means.reshape(-1) for ens in hdc_ens], axis=0)
             try:
                 generate_eval_animation(
                     anim_data["target_pos"],
@@ -482,11 +525,12 @@ def _evaluate(
                     anim_data["pc_acts"],
                     anim_data["hdc_acts"],
                     pc_centers,
+                    hdc_centers,
                     cfg.task.env_size,
                     anim_path,
-                    fps=getattr(cfg.training, "eval_anim_fps", 20),
-                    step=getattr(cfg.training, "eval_anim_step", 4),
-                    num_workers=getattr(cfg.training, "eval_anim_workers", 4),
+                    fps=int(_get_animation_setting(cfg, "anim_fps", 20)),
+                    step=int(_get_animation_setting(cfg, "anim_step", 4)),
+                    num_workers=int(_get_animation_setting(cfg, "anim_workers", 4)),
                 )
             except Exception as exc:
                 logger.warning("eval animation failed: %s", exc)

@@ -12,12 +12,8 @@ Usage:
 """
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
 
 import matplotlib
@@ -36,6 +32,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from dataset import TrajectoryDataset
 from train import load_config
+from utils import (
+    generate_trajectory_animation,
+    get_head_direction_ensembles,
+    get_place_cell_ensembles,
+    prepare_dataset_animation_inputs,
+)
 
 
 DEFAULT_SPATIAL_BINS = 32
@@ -133,22 +135,32 @@ def parse_args() -> argparse.Namespace:
         help="Path for the trajectory animation MP4. " "Defaults to <output>_traj.mp4",
     )
     parser.add_argument(
+        "--anim_num_traj",
+        type=int,
+        default=None,
+        help="Number of trajectories to include in the animation. "
+        "Defaults to visualization.anim_num_traj from config.",
+    )
+    parser.add_argument(
         "--anim_fps",
         type=int,
-        default=20,
-        help="Frames per second for the trajectory animation MP4",
+        default=None,
+        help="Frames per second for the trajectory animation MP4. "
+        "Defaults to visualization.anim_fps from config.",
+    )
+    parser.add_argument(
+        "--anim_step",
+        type=int,
+        default=None,
+        help="Render every N-th timestep in the trajectory animation. "
+        "Defaults to visualization.anim_step from config.",
     )
     parser.add_argument(
         "--anim_workers",
         type=int,
-        default=8,
-        help="Number of worker processes for MP4 frame rendering",
-    )
-    parser.add_argument(
-        "--anim_chunk_size",
-        type=int,
-        default=32,
-        help="Number of frames rendered per animation worker chunk",
+        default=None,
+        help="Number of worker processes for MP4 frame rendering. "
+        "Defaults to visualization.anim_workers from config.",
     )
     parser.add_argument(
         "--num_workers",
@@ -216,6 +228,40 @@ def _resolve_visualization_bins(cfg, args) -> dict:
         bins[name] = value
 
     return bins
+
+
+def _resolve_animation_settings(cfg, args) -> dict:
+    """Resolve shared animation settings from CLI, config, and legacy keys."""
+    vis_cfg = getattr(cfg, "visualization", None)
+    training_cfg = getattr(cfg, "training", None)
+    defaults = {
+        "anim_num_traj": 4,
+        "anim_fps": 20,
+        "anim_step": 4,
+        "anim_workers": 4,
+    }
+    legacy_names = {
+        "anim_num_traj": "eval_anim_num_traj",
+        "anim_fps": "eval_anim_fps",
+        "anim_step": "eval_anim_step",
+        "anim_workers": "eval_anim_workers",
+    }
+    resolved = {}
+
+    for name, default in defaults.items():
+        value = getattr(args, name, None)
+        if value is None and vis_cfg is not None and hasattr(vis_cfg, name):
+            value = getattr(vis_cfg, name)
+        if value is None and training_cfg is not None and hasattr(training_cfg, legacy_names[name]):
+            value = getattr(training_cfg, legacy_names[name])
+        if value is None:
+            value = default
+        value = int(value)
+        if value <= 0:
+            raise ValueError(f"{name} must be a positive integer, got {value}.")
+        resolved[name] = value
+
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -424,209 +470,35 @@ def visualize(
 def visualize_animation(
     dataset: TrajectoryDataset,
     save_path: str,
+    pc_ensembles,
+    hdc_ensembles,
     fps: int = 20,
-    max_trajectories: int = 16,
+    max_trajectories: int = 4,
+    step: int = 4,
     num_workers: int = 8,
-    chunk_size: int = 32,
 ) -> None:
-    """Save an MP4 animation by rendering frames in parallel and encoding with ffmpeg."""
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError(
-            "MP4 animation export requires ffmpeg to be installed and available on PATH."
-        )
-
-    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-
-    pos_all = dataset._data["target_pos"]
-    init_pos = dataset._data["init_pos"]
-    num_show = min(max_trajectories, len(pos_all))
-    full_pos = np.concatenate(
-        [init_pos[:num_show, np.newaxis, :], pos_all[:num_show]],
-        axis=1,
+    """Save an eval-style 3-panel animation for generated trajectories."""
+    anim_inputs = prepare_dataset_animation_inputs(
+        dataset,
+        pc_ensembles,
+        hdc_ensembles,
+        max_trajectories=max_trajectories,
     )
-    num_frames = full_pos.shape[1]
-    if num_show == 0:
-        raise ValueError("Cannot animate an empty dataset.")
-
-    chunk_size = max(1, int(chunk_size))
-    num_workers = max(1, int(num_workers))
-    colors = plt.cm.tab20(np.linspace(0.0, 1.0, max(num_show, 1), endpoint=False)).astype(
-        np.float32
-    )
-    frame_chunks = [
-        (start, min(start + chunk_size, num_frames))
-        for start in range(0, num_frames, chunk_size)
-    ]
-    render_workers = min(num_workers, max(1, len(frame_chunks)))
-
-    with tempfile.TemporaryDirectory(prefix="traj_frames_") as frames_dir:
-        render_desc = f"render:{os.path.basename(save_path)}"
-        render_bar = (
-            tqdm(total=num_frames, desc=render_desc, unit="frame")
-            if tqdm is not None
-            else None
-        )
-        try:
-            render_tasks = [
-                (
-                    full_pos,
-                    colors,
-                    dataset.env_size,
-                    dataset.seq_len,
-                    start,
-                    end,
-                    frames_dir,
-                )
-                for start, end in frame_chunks
-            ]
-            if render_workers == 1 or len(render_tasks) == 1:
-                for task in render_tasks:
-                    rendered = _render_animation_chunk(task)
-                    if render_bar is not None:
-                        render_bar.update(rendered)
-            else:
-                with ProcessPoolExecutor(max_workers=render_workers) as executor:
-                    futures = [executor.submit(_render_animation_chunk, task) for task in render_tasks]
-                    for future in as_completed(futures):
-                        rendered = future.result()
-                        if render_bar is not None:
-                            render_bar.update(rendered)
-        finally:
-            if render_bar is not None:
-                render_bar.close()
-
-        _encode_animation_frames(frames_dir, save_path, fps=max(fps, 1), num_frames=num_frames)
-
-    print(f"Animation saved to {save_path}")
-
-
-def _render_animation_chunk(task) -> int:
-    """Render one chunk of animation frames to PNG files."""
-    full_pos, colors, env_size, seq_len, start_frame, end_frame, frames_dir = task
-    half = env_size / 2.0
-    num_show = full_pos.shape[0]
-
-    fig, ax = plt.subplots(figsize=(7, 7))
-    line_artists = [
-        ax.plot([], [], color=colors[i], alpha=0.75, linewidth=1.5)[0]
-        for i in range(num_show)
-    ]
-    point_artist = ax.scatter(
-        full_pos[:, 0, 0],
-        full_pos[:, 0, 1],
-        s=32,
-        c=colors[:num_show],
-        zorder=3,
-    )
-    time_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, ha="left", va="top")
-
-    ax.set_xlim(-half, half)
-    ax.set_ylim(-half, half)
-    ax.set_aspect("equal")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_title(f"Sample trajectories over time (n={num_show})")
-    ax.add_patch(
-        plt.Rectangle(
-            (-half, -half),
-            env_size,
-            env_size,
-            fill=False,
-            edgecolor="k",
-            linewidth=1.5,
-        )
-    )
-
-    try:
-        for frame_idx in range(start_frame, end_frame):
-            for traj_idx, line in enumerate(line_artists):
-                xy = full_pos[traj_idx, : frame_idx + 1]
-                line.set_data(xy[:, 0], xy[:, 1])
-
-            point_artist.set_offsets(full_pos[:, frame_idx, :])
-            logical_step = max(frame_idx - 1, 0)
-            time_text.set_text(
-                f"step {logical_step}/{seq_len}\ntime {logical_step * TrajectoryDataset._DT:.2f}s"
-            )
-            frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
-            fig.savefig(frame_path, dpi=120)
-    finally:
-        plt.close(fig)
-
-    return end_frame - start_frame
-
-
-def _encode_animation_frames(
-    frames_dir: str,
-    save_path: str,
-    fps: int,
-    num_frames: int,
-) -> None:
-    """Encode rendered PNG frames into an MP4, showing ffmpeg progress when available."""
-    command = [
-        "ffmpeg",
-        "-y",
-        "-loglevel",
-        "error",
-        "-framerate",
-        str(fps),
-        "-i",
-        os.path.join(frames_dir, "frame_%06d.png"),
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-progress",
-        "pipe:1",
-        "-nostats",
+    generate_trajectory_animation(
+        anim_inputs["target_pos"],
+        anim_inputs["pred_pos"],
+        anim_inputs["pc_acts"],
+        anim_inputs["hdc_acts"],
+        anim_inputs["pc_centers"],
+        anim_inputs["hdc_centers"],
+        dataset.env_size,
         save_path,
-    ]
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
+        fps=fps,
+        step=step,
+        num_workers=num_workers,
+        title_prefix="Data traj",
+        pred_label="decoded",
     )
-
-    encode_bar = (
-        tqdm(total=num_frames, desc=f"encode:{os.path.basename(save_path)}", unit="frame")
-        if tqdm is not None
-        else None
-    )
-    last_frame = 0
-
-    try:
-        if process.stdout is not None:
-            for line in process.stdout:
-                entry = line.strip()
-                if not entry.startswith("frame="):
-                    continue
-                try:
-                    current_frame = min(num_frames, int(entry.split("=", 1)[1]))
-                except ValueError:
-                    continue
-                if encode_bar is not None and current_frame > last_frame:
-                    encode_bar.update(current_frame - last_frame)
-                last_frame = current_frame
-
-        stderr_output = ""
-        if process.stderr is not None:
-            stderr_output = process.stderr.read()
-        return_code = process.wait()
-        if encode_bar is not None and last_frame < num_frames:
-            encode_bar.update(num_frames - last_frame)
-        if return_code != 0:
-            raise RuntimeError(
-                "ffmpeg failed while encoding the trajectory animation.\n"
-                f"Command: {' '.join(command)}\n"
-                f"stderr:\n{stderr_output.strip()}"
-            )
-    finally:
-        if encode_bar is not None:
-            encode_bar.close()
 
 
 class GenerationProgressPreview:
@@ -876,18 +748,21 @@ def generate_dataset_file(
     env_size: float,
     velocity_noise,
     seed: int,
+    pc_ensembles=None,
+    hdc_ensembles=None,
     visualize_output: str = None,
     animation_output: str = None,
+    animation_num_trajectories: int = 4,
     animation_fps: int = 20,
+    animation_step: int = 4,
     anim_workers: int = 8,
-    anim_chunk_size: int = 32,
     num_workers: int = 1,
     progress_output: str = None,
     progress_every: int = 4,
     spatial_bins: int = DEFAULT_SPATIAL_BINS,
     directional_bins: int = DEFAULT_DIRECTIONAL_BINS,
 ) -> TrajectoryDataset:
-    """Generate one dataset file and optionally emit its visualization PDF."""
+    """Generate one dataset file and optionally emit its visualization artifacts."""
     print(
         f"Generating {num_samples} trajectories for {output_path} "
         f"(seq_len={seq_len}, env_size={env_size} m, seed={seed}, "
@@ -925,12 +800,19 @@ def generate_dataset_file(
         )
 
     if animation_output is not None:
+        if pc_ensembles is None or hdc_ensembles is None:
+            raise ValueError(
+                "Animation export requires place-cell and head-direction ensembles."
+            )
         visualize_animation(
             dataset,
             animation_output,
+            pc_ensembles=pc_ensembles,
+            hdc_ensembles=hdc_ensembles,
             fps=animation_fps,
+            max_trajectories=animation_num_trajectories,
+            step=animation_step,
             num_workers=anim_workers,
-            chunk_size=anim_chunk_size,
         )
 
     return dataset
@@ -975,6 +857,9 @@ def main() -> None:
     env_size = args.env_size or cfg.task.env_size
     seed = args.seed if args.seed is not None else cfg.task.neurons_seed
     visualization_bins = _resolve_visualization_bins(cfg, args)
+    animation_settings = _resolve_animation_settings(cfg, args)
+    pc_ensembles = get_place_cell_ensembles(cfg)
+    hdc_ensembles = get_head_direction_ensembles(cfg)
 
     vis_path = None
     if args.visualize:
@@ -1006,11 +891,14 @@ def main() -> None:
         env_size=env_size,
         velocity_noise=cfg.task.velocity_noise,
         seed=seed,
+        pc_ensembles=pc_ensembles,
+        hdc_ensembles=hdc_ensembles,
         visualize_output=vis_path,
         animation_output=anim_path,
-        animation_fps=args.anim_fps,
-        anim_workers=args.anim_workers,
-        anim_chunk_size=args.anim_chunk_size,
+        animation_num_trajectories=animation_settings["anim_num_traj"],
+        animation_fps=animation_settings["anim_fps"],
+        animation_step=animation_settings["anim_step"],
+        anim_workers=animation_settings["anim_workers"],
         num_workers=args.num_workers,
         progress_output=progress_path,
         progress_every=args.progress_every,
@@ -1036,6 +924,8 @@ def main() -> None:
             env_size=env_size,
             velocity_noise=cfg.task.velocity_noise,
             seed=eval_seed,
+            pc_ensembles=pc_ensembles,
+            hdc_ensembles=hdc_ensembles,
             num_workers=args.num_workers,
             progress_output=eval_progress_path,
             progress_every=args.progress_every,

@@ -29,7 +29,7 @@ Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
 - Pre-generated `train/eval` datasets, with on-the-fly fallback.
 - Compact `train.log` and TensorBoard logging.
 - Decoded-position metric `pos_mse` for training and evaluation.
-- Paginated rate-map PDFs, HDC tuning PDFs, and evaluation MP4s.
+- Paginated rate-map PDFs, HDC tuning PDFs, and shared 3-panel MP4s for eval and generated data.
 - CLI-oriented data generation, visualization, and experiment management.
 
 ## 📚 References
@@ -41,7 +41,7 @@ Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
 
 ## 🧭 Overview
 
-This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, MP4 animations, TensorBoard logging, a decoded-position metric (`pos_mse`), and a more complete CLI workflow for reproducible experiments.
+This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, shared 3-panel MP4 animations, TensorBoard logging, a decoded-position metric (`pos_mse`), and a more complete CLI workflow for reproducible experiments.
 
 ## ⚡ Quick Start
 
@@ -58,8 +58,14 @@ brew install ffmpeg
 # generate train/eval splits plus preview artifacts
 python generate_data.py --visualize --animate
 
+# speed up preview videos by sampling every other step
+python generate_data.py --animate --anim_step 2
+
 # train with the generated dataset
 python train.py
+
+# or override the shared animation config for eval videos
+python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
 # or print the common command list
 bash run_scripts.sh
@@ -82,7 +88,7 @@ If `data/train.npz` is missing, `train.py` falls back to on-the-fly trajectory g
 - `tensorboard/`: scalar metrics and config snapshot.
 - `rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
 - `hdc_tuning_epoch_XXXX.pdf`: HDC tuning curves.
-- `eval_animation_epoch_XXXX.mp4`: evaluation trajectory animation.
+- `eval_animation_epoch_XXXX.mp4`: eval-style 3-panel trajectory animation.
 
 ## 🗂️ Repo Layout
 
@@ -104,7 +110,8 @@ grid-cells-torch/
 <summary>🔍 More Details</summary>
 
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
-- `generate_data.py` can export `.npz`, PDF summaries, and MP4 animations in one workflow.
+- `generate_data.py` can export `.npz`, PDF summaries, and the same 3-panel MP4 animation style used by eval outputs.
+- Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
 - `run_scripts.sh` prints a compact list of common train, generate, and TensorBoard commands.
 - The current default config is tuned for the expanded engineering workflow, not a line-by-line lockstep copy of the original hyperparameters.
 - README media is mirrored from selected run outputs into `docs/assets/readme/` so the landing page does not depend on ignored `results/` files.

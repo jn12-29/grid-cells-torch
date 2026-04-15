@@ -29,7 +29,7 @@
 - 预生成 `train/eval` 数据集，并保留在线生成回退模式。
 - 精简 `train.log` 和 TensorBoard 日志。
 - 在训练与评估中加入解码位置指标 `pos_mse`。
-- 支持分页 rate-map PDF、HDC tuning PDF 和评估 MP4。
+- 支持分页 rate-map PDF、HDC tuning PDF，以及训练评估和数据生成共用的 3-panel MP4。
 - 提供以 CLI 为中心的数据生成、可视化和实验管理流程。
 
 ## 📚 参考
@@ -41,7 +41,7 @@
 
 ## 🧭 概览
 
-本仓库一开始严格对齐 DeepMind 官方 `grid-cells` 实现，并将核心训练流程迁移到 PyTorch。之后又加入了固定数据集生成、评估 PDF、HDC tuning 图、MP4 动画、TensorBoard、`pos_mse` 解码指标以及更完整的 CLI 工作流，更适合做可复现实验和后续分析。
+本仓库一开始严格对齐 DeepMind 官方 `grid-cells` 实现，并将核心训练流程迁移到 PyTorch。之后又加入了固定数据集生成、评估 PDF、HDC tuning 图、共用的 3-panel MP4 动画、TensorBoard、`pos_mse` 解码指标以及更完整的 CLI 工作流，更适合做可复现实验和后续分析。
 
 ## ⚡ 快速开始
 
@@ -58,8 +58,14 @@ brew install ffmpeg
 # generate train/eval splits plus preview artifacts
 python generate_data.py --visualize --animate
 
+# speed up preview videos by sampling every other step
+python generate_data.py --animate --anim_step 2
+
 # train with the generated dataset
 python train.py
+
+# or override the shared animation config for eval videos
+python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
 # or print the common command list
 bash run_scripts.sh
@@ -82,7 +88,7 @@ tensorboard --logdir results
 - `tensorboard/`：标量指标和配置快照。
 - `rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
 - `hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
-- `eval_animation_epoch_XXXX.mp4`：评估轨迹动画。
+- `eval_animation_epoch_XXXX.mp4`：eval 风格的 3-panel 轨迹动画。
 
 ## 🗂️ 仓库结构
 
@@ -104,7 +110,8 @@ grid-cells-torch/
 <summary>🔍 更多说明</summary>
 
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
-- `generate_data.py` 可以在同一工作流中导出 `.npz`、PDF 汇总和 MP4 动画。
+- `generate_data.py` 可以在同一工作流中导出 `.npz`、PDF 汇总，以及和 eval 输出同风格的 3-panel MP4 动画。
+- 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
 - `run_scripts.sh` 会打印一份精简的常用训练、数据生成和 TensorBoard 命令清单。
 - 当前默认配置更偏向扩展后的工程化实验流程，而不是对原始超参数做逐行逐值锁定。
 - README 中使用的媒体资源会从选定运行结果镜像到 `docs/assets/readme/`，避免首页依赖被忽略的 `results/` 文件。

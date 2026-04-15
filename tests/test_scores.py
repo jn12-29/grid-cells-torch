@@ -82,6 +82,38 @@ def test_get_scores_batch_matches_direct_scores():
     assert np.allclose(sacs, np.asarray([result[4] for result in direct]))
 
 
+def test_calculate_sac_batch_matches_scalar_with_nans():
+    """Batched SAC should preserve scalar NaN handling and edge behaviour."""
+    scorer = make_scorer()
+    ratemaps = np.array(
+        [
+            [[1.0, np.nan, 0.5], [0.0, -1.5, 2.0], [np.nan, 0.25, -0.75]],
+            [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [4.0, np.nan, 5.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    batch_sacs = scorer.calculate_sac_batch(ratemaps)
+    direct_sacs = np.asarray([scorer.calculate_sac(rm) for rm in ratemaps])
+
+    assert np.allclose(batch_sacs, direct_sacs)
+    assert np.isfinite(batch_sacs).all()
+
+
+def test_calculate_sac_batch_accepts_single_ratemap():
+    """A 2-D ratemap input should behave like a batch of one."""
+    scorer = make_scorer()
+    ratemap = np.array(
+        [[1.0, 2.0, 0.0], [0.0, 3.0, 4.0], [5.0, 0.0, 6.0]], dtype=np.float32
+    )
+
+    batch_sac = scorer.calculate_sac_batch(ratemap)
+    direct_sac = scorer.calculate_sac(ratemap)
+
+    assert batch_sac.shape == (1, 2 * ratemap.shape[0] - 1, 2 * ratemap.shape[1] - 1)
+    assert np.allclose(batch_sac[0], direct_sac)
+
+
 def test_get_scores_and_plot_from_ratemaps_writes_paginated_pdf(tmp_path):
     """Paginated plotting should write a PDF while keeping all units."""
     rng = np.random.default_rng(2)

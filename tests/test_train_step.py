@@ -60,6 +60,15 @@ def make_cfg():
             adamw_eps=1e-8,
             weight_decay=1e-5,
             grad_clip=1e-5,
+            eval_every=1,
+        ),
+        visualization=SimpleNamespace(
+            spatial_bins=32,
+            directional_bins=20,
+            anim_num_traj=4,
+            anim_fps=20,
+            anim_step=4,
+            anim_workers=4,
         ),
     )
 
@@ -144,11 +153,14 @@ def test_step_log_interval_caps_step_scalars_per_epoch():
 def test_build_optimizer_defaults_to_rmsprop():
     """Optimizer builder should preserve the existing RMSprop default."""
     cfg = make_cfg()
-    model = torch.nn.Linear(3, 2)
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
 
-    optimizer = build_optimizer(model, cfg)
+    optimizer, decoder_params = build_optimizer(model, cfg)
 
     assert isinstance(optimizer, torch.optim.RMSprop)
+    assert decoder_params
 
 
 def test_build_optimizer_can_switch_to_adamw():
@@ -157,11 +169,14 @@ def test_build_optimizer_can_switch_to_adamw():
     cfg.training.optimizer = "adamw"
     cfg.training.adamw_betas = [0.8, 0.95]
     cfg.training.adamw_eps = 1e-6
-    model = torch.nn.Linear(3, 2)
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
 
-    optimizer = build_optimizer(model, cfg)
+    optimizer, decoder_params = build_optimizer(model, cfg)
 
     assert isinstance(optimizer, torch.optim.AdamW)
+    assert decoder_params
     assert optimizer.defaults["betas"] == (0.8, 0.95)
     assert optimizer.defaults["eps"] == 1e-6
 
@@ -211,7 +226,11 @@ def test_build_eval_loader_prefers_configured_eval_data_path(tmp_path, monkeypat
     loader = _build_eval_loader(cfg, logging.getLogger("test_eval"))
 
     assert loader == "eval-loader"
-    assert calls["kwargs"] == {"data_path": str(cfg_path), "shuffle": False}
+    assert calls["kwargs"] == {
+        "data_path": str(cfg_path),
+        "shuffle": False,
+        "batch_size": 4,
+    }
 
 
 def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
@@ -230,7 +249,7 @@ def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
     loader = _build_eval_loader(cfg, logging.getLogger("test_eval_missing"))
 
     assert loader == "generated-eval-loader"
-    assert calls["kwargs"] == {"num_samples": 7, "shuffle": False}
+    assert calls["kwargs"] == {"num_samples": 7, "shuffle": False, "batch_size": 4}
 
 
 def test_build_train_loader_prefers_configured_data_path(tmp_path, monkeypatch):
@@ -335,6 +354,7 @@ def test_evaluate_reports_position_mse(monkeypatch, tmp_path):
         "get_scores_and_plot_from_ratemaps",
         lambda *args, **kwargs: (np.array([0.5]), np.array([0.25])),
     )
+    monkeypatch.setattr(train_module, "generate_eval_animation", lambda *args, **kwargs: None)
 
     batch = {
         "init_pos": torch.zeros(1, 2),

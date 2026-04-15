@@ -14,6 +14,71 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import generate_data
+from ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
+
+
+def _make_cfg(train_path: str, eval_path: str = None):
+    return SimpleNamespace(
+        task=SimpleNamespace(
+            seq_len=6,
+            env_size=2.2,
+            neurons_seed=5,
+            velocity_noise=[0.0, 0.0, 0.0],
+            targets_type="softmax",
+            lstm_init_type="softmax",
+            n_pc=[8],
+            pc_scale=[0.35],
+            n_hdc=[6],
+            hdc_concentration=[20.0],
+        ),
+        training=SimpleNamespace(
+            steps_per_epoch=2,
+            batch_size=3,
+            eval_batch_size=4,
+            data_path=train_path,
+            eval_data_path=eval_path,
+        ),
+        visualization=SimpleNamespace(
+            spatial_bins=32,
+            directional_bins=20,
+            anim_num_traj=4,
+            anim_fps=20,
+            anim_step=4,
+            anim_workers=4,
+        ),
+    )
+
+
+def _make_args(**overrides):
+    defaults = dict(
+        config="config.yaml",
+        output=None,
+        num_samples=None,
+        seq_len=None,
+        env_size=None,
+        seed=None,
+        visualize=False,
+        animate=False,
+        vis_output=None,
+        anim_output=None,
+        anim_num_traj=None,
+        anim_fps=None,
+        anim_step=None,
+        anim_workers=None,
+        num_workers=1,
+        visualize_progress=False,
+        progress_output=None,
+        eval_progress_output=None,
+        progress_every=4,
+        spatial_bins=None,
+        directional_bins=None,
+        eval_output=None,
+        train_only=False,
+        eval_num_samples=None,
+        eval_seed=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
 
 
 def test_generate_dataset_file_writes_npz(tmp_path):
@@ -57,17 +122,30 @@ def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
     output_path = tmp_path / "train.npz"
     anim_path = tmp_path / "train_traj.mp4"
     calls = []
+    pc_ens = [PlaceCellEnsemble(4, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(6, concentration=20.0, seed=0)]
 
     def fake_visualize_animation(
         dataset,
         save_path,
+        pc_ensembles,
+        hdc_ensembles,
         fps=20,
-        max_trajectories=16,
+        max_trajectories=4,
+        step=4,
         num_workers=8,
-        chunk_size=32,
     ):
         calls.append(
-            (dataset.num_samples, save_path, fps, max_trajectories, num_workers, chunk_size)
+            (
+                dataset.num_samples,
+                save_path,
+                len(pc_ensembles),
+                len(hdc_ensembles),
+                fps,
+                max_trajectories,
+                step,
+                num_workers,
+            )
         )
         anim_path.write_bytes(b"fake-mp4")
 
@@ -80,14 +158,17 @@ def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
         env_size=2.2,
         velocity_noise=[0.0, 0.0, 0.0],
         seed=3,
+        pc_ensembles=pc_ens,
+        hdc_ensembles=hdc_ens,
         animation_output=str(anim_path),
+        animation_num_trajectories=3,
         animation_fps=12,
+        animation_step=2,
         anim_workers=5,
-        anim_chunk_size=7,
     )
 
     assert anim_path.exists()
-    assert calls == [(6, str(anim_path), 12, 16, 5, 7)]
+    assert calls == [(6, str(anim_path), 1, 1, 12, 3, 2, 5)]
 
 
 def test_resolve_visualization_bins_prefers_cli_then_config():
@@ -111,8 +192,45 @@ def test_resolve_visualization_bins_rejects_non_positive_values():
         generate_data._resolve_visualization_bins(cfg, args)
 
 
-def test_visualize_animation_renders_frames_and_encodes_mp4(tmp_path, monkeypatch):
-    """Animation export should render frame chunks and invoke ffmpeg encoding."""
+def test_resolve_animation_settings_prefers_cli_then_config_then_legacy():
+    """Animation settings should use CLI overrides, then visualization, then legacy eval keys."""
+    cfg = SimpleNamespace(
+        visualization=SimpleNamespace(anim_num_traj=4, anim_fps=24, anim_step=5),
+        training=SimpleNamespace(eval_anim_workers=7),
+    )
+    args = SimpleNamespace(
+        anim_num_traj=2,
+        anim_fps=None,
+        anim_step=None,
+        anim_workers=None,
+    )
+
+    resolved = generate_data._resolve_animation_settings(cfg, args)
+
+    assert resolved == {
+        "anim_num_traj": 2,
+        "anim_fps": 24,
+        "anim_step": 5,
+        "anim_workers": 7,
+    }
+
+
+def test_resolve_animation_settings_rejects_non_positive_values():
+    """Animation settings must remain positive integers."""
+    cfg = SimpleNamespace(visualization=SimpleNamespace(anim_step=0), training=SimpleNamespace())
+    args = SimpleNamespace(
+        anim_num_traj=None,
+        anim_fps=None,
+        anim_step=None,
+        anim_workers=None,
+    )
+
+    with pytest.raises(ValueError, match="anim_step must be a positive integer"):
+        generate_data._resolve_animation_settings(cfg, args)
+
+
+def test_visualize_animation_prepares_eval_style_inputs(tmp_path, monkeypatch):
+    """Animation export should prepare eval-style inputs and call the shared renderer."""
     output_path = tmp_path / "train.npz"
     anim_path = tmp_path / "train_traj.mp4"
     dataset = generate_data.generate_dataset_file(
@@ -123,118 +241,80 @@ def test_visualize_animation_renders_frames_and_encodes_mp4(tmp_path, monkeypatc
         velocity_noise=[0.0, 0.0, 0.0],
         seed=3,
     )
+    pc_ens = [PlaceCellEnsemble(5, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(6, concentration=20.0, seed=0)]
+    captured = {}
 
-    render_calls = []
-    encode_calls = []
+    def fake_generate_trajectory_animation(
+        target_pos,
+        pred_pos,
+        pc_acts,
+        hdc_acts,
+        pc_centers,
+        hdc_centers,
+        env_size,
+        save_path,
+        fps=20,
+        step=4,
+        num_workers=4,
+        title_prefix="Trajectory",
+        pred_label="predicted",
+    ):
+        captured.update(
+            {
+                "target_pos": target_pos,
+                "pred_pos": pred_pos,
+                "pc_acts": pc_acts,
+                "hdc_acts": hdc_acts,
+                "pc_centers": pc_centers,
+                "hdc_centers": hdc_centers,
+                "env_size": env_size,
+                "save_path": save_path,
+                "fps": fps,
+                "step": step,
+                "num_workers": num_workers,
+                "title_prefix": title_prefix,
+                "pred_label": pred_label,
+            }
+        )
+        anim_path.write_bytes(b"fake-mp4")
 
-    def fake_render_animation_chunk(task):
-        full_pos, colors, env_size, seq_len, start_frame, end_frame, frames_dir = task
-        render_calls.append((start_frame, end_frame, full_pos.shape[0], seq_len, len(colors)))
-        for frame_idx in range(start_frame, end_frame):
-            frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
-            with open(frame_path, "wb") as handle:
-                handle.write(b"png")
-        return end_frame - start_frame
-
-    def fake_encode_animation_frames(frames_dir, save_path, fps, num_frames):
-        encode_calls.append((frames_dir, save_path, fps, num_frames))
-        with open(save_path, "wb") as handle:
-            handle.write(b"fake-mp4")
-
-    class DummyFuture:
-        def __init__(self, result_value):
-            self._result_value = result_value
-
-        def result(self):
-            return self._result_value
-
-    class DummyExecutor:
-        def __init__(self, max_workers):
-            self.max_workers = max_workers
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def submit(self, fn, *args, **kwargs):
-            return DummyFuture(fn(*args, **kwargs))
-
-    monkeypatch.setattr(generate_data, "_render_animation_chunk", fake_render_animation_chunk)
-    monkeypatch.setattr(generate_data, "_encode_animation_frames", fake_encode_animation_frames)
-    monkeypatch.setattr(generate_data, "ProcessPoolExecutor", DummyExecutor)
-    monkeypatch.setattr(generate_data, "as_completed", lambda futures: futures)
+    monkeypatch.setattr(generate_data, "generate_trajectory_animation", fake_generate_trajectory_animation)
 
     generate_data.visualize_animation(
         dataset,
         str(anim_path),
+        pc_ens,
+        hdc_ens,
         fps=12,
-        max_trajectories=4,
+        max_trajectories=3,
+        step=2,
         num_workers=2,
-        chunk_size=2,
     )
 
     assert anim_path.exists()
-    assert render_calls == [
-        (0, 2, 4, 5, 4),
-        (2, 4, 4, 5, 4),
-        (4, 6, 4, 5, 4),
-    ]
-    assert encode_calls[0][1:] == (str(anim_path), 12, 6)
+    assert captured["target_pos"].shape == (3, 5, 2)
+    assert captured["pred_pos"].shape == (3, 5, 2)
+    assert captured["pc_acts"].shape == (3, 5, 5)
+    assert captured["hdc_acts"].shape == (3, 5, 6)
+    assert captured["pc_centers"].shape == (5, 2)
+    assert captured["hdc_centers"].shape == (6,)
+    assert captured["save_path"] == str(anim_path)
+    assert captured["fps"] == 12
+    assert captured["step"] == 2
+    assert captured["num_workers"] == 2
+    assert captured["title_prefix"] == "Data traj"
+    assert captured["pred_label"] == "decoded"
 
 
 def test_main_defaults_output_to_config_train_and_eval_paths(tmp_path, monkeypatch):
     """CLI should default to config train/eval output paths."""
     train_path = tmp_path / "train.npz"
     eval_path = tmp_path / "eval.npz"
-    cfg = SimpleNamespace(
-        task=SimpleNamespace(
-            seq_len=6,
-            env_size=2.2,
-            neurons_seed=5,
-            velocity_noise=[0.0, 0.0, 0.0],
-        ),
-        training=SimpleNamespace(
-            steps_per_epoch=2,
-            batch_size=3,
-            eval_batch_size=4,
-            data_path=str(train_path),
-            eval_data_path=str(eval_path),
-        ),
-    )
+    cfg = _make_cfg(str(train_path), str(eval_path))
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(
-        generate_data,
-        "parse_args",
-        lambda: SimpleNamespace(
-            config="config.yaml",
-            output=None,
-            num_samples=None,
-            seq_len=None,
-            env_size=None,
-            seed=None,
-            visualize=False,
-            animate=False,
-            vis_output=None,
-            anim_output=None,
-            anim_fps=20,
-            anim_workers=8,
-            anim_chunk_size=32,
-            num_workers=1,
-            visualize_progress=False,
-            progress_output=None,
-            eval_progress_output=None,
-            progress_every=4,
-            spatial_bins=None,
-            directional_bins=None,
-            eval_output=None,
-            train_only=False,
-            eval_num_samples=None,
-            eval_seed=None,
-        ),
-    )
+    monkeypatch.setattr(generate_data, "parse_args", lambda: _make_args())
 
     generate_data.main()
 
@@ -248,53 +328,10 @@ def test_main_train_only_skips_default_eval_output(tmp_path, monkeypatch):
     """CLI should allow generating only the main split."""
     train_path = tmp_path / "train.npz"
     eval_path = tmp_path / "eval.npz"
-    cfg = SimpleNamespace(
-        task=SimpleNamespace(
-            seq_len=6,
-            env_size=2.2,
-            neurons_seed=5,
-            velocity_noise=[0.0, 0.0, 0.0],
-        ),
-        training=SimpleNamespace(
-            steps_per_epoch=2,
-            batch_size=3,
-            eval_batch_size=4,
-            data_path=str(train_path),
-            eval_data_path=str(eval_path),
-        ),
-    )
+    cfg = _make_cfg(str(train_path), str(eval_path))
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(
-        generate_data,
-        "parse_args",
-        lambda: SimpleNamespace(
-            config="config.yaml",
-            output=None,
-            num_samples=None,
-            seq_len=None,
-            env_size=None,
-            seed=None,
-            visualize=False,
-            animate=False,
-            vis_output=None,
-            anim_output=None,
-            anim_fps=20,
-            anim_workers=8,
-            anim_chunk_size=32,
-            num_workers=1,
-            visualize_progress=False,
-            progress_output=None,
-            eval_progress_output=None,
-            progress_every=4,
-            spatial_bins=None,
-            directional_bins=None,
-            eval_output=None,
-            train_only=True,
-            eval_num_samples=None,
-            eval_seed=None,
-        ),
-    )
+    monkeypatch.setattr(generate_data, "parse_args", lambda: _make_args(train_only=True))
 
     generate_data.main()
 
@@ -306,47 +343,13 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
     """CLI entry point should support writing train and eval files in one run."""
     train_path = tmp_path / "train.npz"
     eval_path = tmp_path / "eval.npz"
-    cfg = SimpleNamespace(
-        task=SimpleNamespace(seq_len=6, env_size=2.2, neurons_seed=5, velocity_noise=[0.0, 0.0, 0.0]),
-        training=SimpleNamespace(
-            steps_per_epoch=2,
-            batch_size=3,
-            eval_batch_size=4,
-            data_path=str(train_path),
-            eval_data_path=str(tmp_path / "config-eval.npz"),
-        ),
-    )
+    cfg = _make_cfg(str(train_path), str(tmp_path / "config-eval.npz"))
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
     monkeypatch.setattr(
         generate_data,
         "parse_args",
-        lambda: SimpleNamespace(
-            config="config.yaml",
-            output=str(train_path),
-            num_samples=None,
-            seq_len=None,
-            env_size=None,
-            seed=None,
-            visualize=False,
-            animate=False,
-            vis_output=None,
-            anim_output=None,
-            anim_fps=20,
-            anim_workers=8,
-            anim_chunk_size=32,
-            num_workers=1,
-            visualize_progress=False,
-            progress_output=None,
-            eval_progress_output=None,
-            progress_every=4,
-            spatial_bins=None,
-            directional_bins=None,
-            eval_output=str(eval_path),
-            train_only=False,
-            eval_num_samples=None,
-            eval_seed=None,
-        ),
+        lambda: _make_args(output=str(train_path), eval_output=str(eval_path)),
     )
 
     generate_data.main()
@@ -360,53 +363,10 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
 def test_main_rejects_same_train_and_eval_output_paths(tmp_path, monkeypatch):
     """Train and eval outputs should not resolve to the same path."""
     shared_path = tmp_path / "shared.npz"
-    cfg = SimpleNamespace(
-        task=SimpleNamespace(
-            seq_len=6,
-            env_size=2.2,
-            neurons_seed=5,
-            velocity_noise=[0.0, 0.0, 0.0],
-        ),
-        training=SimpleNamespace(
-            steps_per_epoch=2,
-            batch_size=3,
-            eval_batch_size=4,
-            data_path=str(shared_path),
-            eval_data_path=str(shared_path),
-        ),
-    )
+    cfg = _make_cfg(str(shared_path), str(shared_path))
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(
-        generate_data,
-        "parse_args",
-        lambda: SimpleNamespace(
-            config="config.yaml",
-            output=None,
-            num_samples=None,
-            seq_len=None,
-            env_size=None,
-            seed=None,
-            visualize=False,
-            animate=False,
-            vis_output=None,
-            anim_output=None,
-            anim_fps=20,
-            anim_workers=8,
-            anim_chunk_size=32,
-            num_workers=1,
-            visualize_progress=False,
-            progress_output=None,
-            eval_progress_output=None,
-            progress_every=4,
-            spatial_bins=None,
-            directional_bins=None,
-            eval_output=None,
-            train_only=False,
-            eval_num_samples=None,
-            eval_seed=None,
-        ),
-    )
+    monkeypatch.setattr(generate_data, "parse_args", lambda: _make_args())
 
     with pytest.raises(ValueError, match="Train and eval output paths must be different"):
         generate_data.main()
@@ -416,52 +376,13 @@ def test_main_rejects_train_only_with_eval_output(tmp_path, monkeypatch):
     """Conflicting train-only/eval flags should be rejected."""
     train_path = tmp_path / "train.npz"
     eval_path = tmp_path / "eval.npz"
-    cfg = SimpleNamespace(
-        task=SimpleNamespace(
-            seq_len=6,
-            env_size=2.2,
-            neurons_seed=5,
-            velocity_noise=[0.0, 0.0, 0.0],
-        ),
-        training=SimpleNamespace(
-            steps_per_epoch=2,
-            batch_size=3,
-            eval_batch_size=4,
-            data_path=str(train_path),
-            eval_data_path=str(eval_path),
-        ),
-    )
+    cfg = _make_cfg(str(train_path), str(eval_path))
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
     monkeypatch.setattr(
         generate_data,
         "parse_args",
-        lambda: SimpleNamespace(
-            config="config.yaml",
-            output=None,
-            num_samples=None,
-            seq_len=None,
-            env_size=None,
-            seed=None,
-            visualize=False,
-            animate=False,
-            vis_output=None,
-            anim_output=None,
-            anim_fps=20,
-            anim_workers=8,
-            anim_chunk_size=32,
-            num_workers=1,
-            visualize_progress=False,
-            progress_output=None,
-            eval_progress_output=None,
-            progress_every=4,
-            spatial_bins=None,
-            directional_bins=None,
-            eval_output=str(eval_path),
-            train_only=True,
-            eval_num_samples=None,
-            eval_seed=None,
-        ),
+        lambda: _make_args(eval_output=str(eval_path), train_only=True),
     )
 
     with pytest.raises(ValueError, match="Cannot combine --train_only with --eval_output"):

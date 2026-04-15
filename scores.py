@@ -179,11 +179,13 @@ class GridScorer(object):
             stencil = np.rot90(b, 2)
             return scipy.signal.convolve2d(x, stencil, mode="full")
 
-        seq1 = np.nan_to_num(seq1)
-        seq2 = np.nan_to_num(seq2)
-        ones_seq1 = np.ones(seq1.shape)
+        # Use float64 internally so scalar and batched SAC paths share the same
+        # numerically stable overlap statistics.
+        seq1 = np.nan_to_num(np.asarray(seq1, dtype=np.float64))
+        seq2 = np.nan_to_num(np.asarray(seq2, dtype=np.float64))
+        ones_seq1 = np.ones(seq1.shape, dtype=np.float64)
         ones_seq1[np.isnan(seq1)] = 0
-        ones_seq2 = np.ones(seq2.shape)
+        ones_seq2 = np.ones(seq2.shape, dtype=np.float64)
         ones_seq2[np.isnan(seq2)] = 0
         seq1[np.isnan(seq1)] = 0
         seq2[np.isnan(seq2)] = 0
@@ -260,59 +262,53 @@ class GridScorer(object):
         )
 
     def calculate_sac_batch(self, ratemaps):
-        """Vectorized SAC for an (N, H, W) batch via numpy rfft2.
+        """Compute SACs for a batch via FFT while preserving scalar semantics."""
+        ratemaps = np.asarray(ratemaps)
+        if ratemaps.ndim == 2:
+            ratemaps = ratemaps[np.newaxis, ...]
 
-        Equivalent to calling calculate_sac() on each ratemap independently,
-        but uses batched FFT instead of N×6 serial convolve2d calls.
+        seq = np.nan_to_num(ratemaps).astype(np.float64, copy=False)
+        ones = np.ones_like(seq, dtype=np.float64)
+        seq_sq = np.square(seq)
 
-        The original scalar implementation computes:
-            filter2(b, x) = convolve2d(x, rot90(b, 2), 'full')
-                          = correlate2d(x, b, 'full')
-        Via FFT:
-            correlate2d(x, b) = fftshift(irfft2(rfft2(x) * conj(rfft2(b))))
-        where fftshift is needed to place zero-lag at the center of the output
-        (index [H-1, W-1]) to match scipy's 'full' mode layout.
-        """
-        N, H, W = ratemaps.shape
-        seq = np.nan_to_num(ratemaps)  # NaN → 0, matching calculate_sac
-        # In calculate_sac, ones is built AFTER nan_to_num, so np.isnan(seq) is always
-        # False and ones is always all-ones — replicate that here.
-        ones = np.ones((N, H, W), dtype=seq.dtype)
-        seq_sq = seq ** 2
-
-        fft_shape = (2 * H - 1, 2 * W - 1)
-        Fs  = np.fft.rfft2(seq,    s=fft_shape, axes=(-2, -1))
-        Fo  = np.fft.rfft2(ones,   s=fft_shape, axes=(-2, -1))
+        fft_shape = tuple(2 * size - 1 for size in seq.shape[-2:])
+        Fs = np.fft.rfft2(seq, s=fft_shape, axes=(-2, -1))
+        Fo = np.fft.rfft2(ones, s=fft_shape, axes=(-2, -1))
         Fss = np.fft.rfft2(seq_sq, s=fft_shape, axes=(-2, -1))
 
         def corr(Fx, Fb):
-            """correlate2d(x, b) = fftshift(irfft2(rfft2(x) * conj(rfft2(b))))."""
             return np.fft.fftshift(
                 np.fft.irfft2(Fx * np.conj(Fb), s=fft_shape, axes=(-2, -1)),
                 axes=(-2, -1),
             )
 
-        # Map to filter2 calls in calculate_sac (seq1 == seq2 == seq):
-        # filter2(seq,     seq)     = correlate2d(seq,    seq)
-        # filter2(seq,     ones)    = correlate2d(ones,   seq)
-        # filter2(ones,    seq)     = correlate2d(seq,    ones)
-        # filter2(seq_sq,  ones)    = correlate2d(ones,   seq_sq)
-        # filter2(ones,    seq_sq)  = correlate2d(seq_sq, ones)
-        # filter2(ones,    ones)    = correlate2d(ones,   ones)
-        seq1_x_seq2 = corr(Fs,  Fs)
-        sum_seq1    = corr(Fo,  Fs)
-        sum_seq2    = corr(Fs,  Fo)
-        sum_seq1_sq = corr(Fo,  Fss)
+        seq1_x_seq2 = corr(Fs, Fs)
+        sum_seq1 = corr(Fo, Fs)
+        sum_seq2 = corr(Fs, Fo)
+        sum_seq1_sq = corr(Fo, Fss)
         sum_seq2_sq = corr(Fss, Fo)
-        n_bins      = corr(Fo,  Fo)
-        n_bins_sq   = n_bins ** 2
+        n_bins = corr(Fo, Fo)
+        n_bins_sq = np.square(n_bins)
 
-        var1  = sum_seq1_sq / n_bins - sum_seq1 ** 2 / n_bins_sq
-        var2  = sum_seq2_sq / n_bins - sum_seq2 ** 2 / n_bins_sq
-        covar = seq1_x_seq2 / n_bins - sum_seq1 * sum_seq2 / n_bins_sq
-        denom = np.sqrt(np.maximum(var1, 0.0)) * np.sqrt(np.maximum(var2, 0.0)) + 1e-8
-        x_coef = covar / denom
-        return np.nan_to_num(np.real(x_coef))
+        var_seq1 = np.subtract(
+            np.divide(sum_seq1_sq, n_bins),
+            np.divide(np.square(sum_seq1), n_bins_sq),
+        )
+        var_seq2 = np.subtract(
+            np.divide(sum_seq2_sq, n_bins),
+            np.divide(np.square(sum_seq2), n_bins_sq),
+        )
+        std_seq1 = np.sqrt(np.maximum(var_seq1, 0.0))
+        std_seq2 = np.sqrt(np.maximum(var_seq2, 0.0))
+        covar = np.subtract(
+            np.divide(seq1_x_seq2, n_bins),
+            np.divide(np.multiply(sum_seq1, sum_seq2), n_bins_sq),
+        )
+        x_coef = np.divide(covar, np.multiply(std_seq1, std_seq2) + 1e-8)
+        x_coef = np.real(x_coef)
+        x_coef = np.nan_to_num(x_coef)
+        x_coef[np.abs(x_coef) < 2e-6] = 0.0
+        return x_coef
 
     def get_scores_batch(self, ratemaps):
         """Score a chunk of rate maps with batched rotation and mask correlation."""

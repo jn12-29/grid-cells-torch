@@ -14,6 +14,7 @@ Usage:
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import io
 import os
+import shutil
 import subprocess
 import tempfile
 from typing import List, Tuple
@@ -454,289 +455,136 @@ def plot_hdc_tuning_curves(
 # ---------------------------------------------------------------------------
 
 
-def _render_eval_traj(args) -> str:
-    """Render a single eval trajectory as a 3-panel MP4.
+def decode_position_from_pc_activations(
+    pc_acts: np.ndarray,
+    pc_centers: np.ndarray,
+) -> np.ndarray:
+    """Decode positions from place-cell activation probabilities via weighted means."""
+    pc_acts = np.asarray(pc_acts, dtype=np.float32)
+    pc_centers = np.asarray(pc_centers, dtype=np.float32)
+    if pc_acts.ndim < 2:
+        raise ValueError("pc_acts must include a cell dimension.")
+    if pc_centers.ndim != 2 or pc_centers.shape[1] != 2:
+        raise ValueError("pc_centers must have shape (n_pc, 2).")
+    if pc_acts.shape[-1] != pc_centers.shape[0]:
+        raise ValueError(
+            "pc_acts and pc_centers must agree on the number of place cells."
+        )
+    return np.tensordot(pc_acts, pc_centers, axes=([-1], [0])).astype(np.float32)
 
-    Top-level function so it can be pickled by ProcessPoolExecutor.
 
-    args is a tuple:
-        traj_idx   : int          trajectory index (for title)
-        target_pos : (T, 2)       ground-truth positions
-        pred_pos   : (T, 2)       decoded predicted positions
-        pc_acts    : (T, n_pc)    place-cell softmax probabilities
-        hdc_acts   : (T, n_hdc)   head-direction-cell softmax probabilities
-        pc_centers : (n_pc, 2)    PC cell centre 2-D coordinates
-        env_size   : float
-        pc_vmax    : float        global colour/size maximum for PC scatter
-        fps        : int
-        step       : int          render every `step`-th timestep
-        out_path   : str          destination .mp4 (or .gif) file path
-    """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    from matplotlib.animation import FFMpegWriter, PillowWriter
-    import numpy as np
+def prepare_dataset_animation_inputs(
+    dataset,
+    pc_ensembles: List[PlaceCellEnsemble],
+    hdc_ensembles: List[HeadDirectionCellEnsemble],
+    max_trajectories: int = 4,
+) -> dict:
+    """Build eval-style animation inputs directly from a generated dataset."""
+    if not pc_ensembles:
+        raise ValueError("At least one place-cell ensemble is required for animation.")
+    if not hdc_ensembles:
+        raise ValueError("At least one head-direction ensemble is required for animation.")
 
+    target_pos_all = dataset._data["target_pos"]
+    target_hd_all = dataset._data["target_hd"]
+    num_show = min(int(max_trajectories), len(target_pos_all))
+    if num_show <= 0:
+        raise ValueError("Cannot animate an empty dataset.")
+
+    target_pos = target_pos_all[:num_show]
+    target_hd = target_hd_all[:num_show]
+    pc_acts = np.concatenate([ens.get_targets(target_pos) for ens in pc_ensembles], axis=-1)
+    hdc_acts = np.concatenate([ens.get_targets(target_hd) for ens in hdc_ensembles], axis=-1)
+    pc_centers = np.concatenate([ens.means for ens in pc_ensembles], axis=0).astype(np.float32)
+    hdc_centers = np.concatenate([ens.means.reshape(-1) for ens in hdc_ensembles], axis=0).astype(
+        np.float32
+    )
+    pred_pos = decode_position_from_pc_activations(pc_acts, pc_centers)
+
+    return {
+        "target_pos": target_pos,
+        "pred_pos": pred_pos,
+        "pc_acts": pc_acts,
+        "hdc_acts": hdc_acts,
+        "pc_centers": pc_centers,
+        "hdc_centers": hdc_centers,
+    }
+
+
+def _sort_hdc_for_animation(hdc_acts: np.ndarray, hdc_centers: np.ndarray):
+    """Sort HDC centers around the circle so polar bars render in angular order."""
+    hdc_centers = np.asarray(hdc_centers, dtype=np.float32).reshape(-1)
+    if hdc_acts.shape[-1] != hdc_centers.shape[0]:
+        raise ValueError(
+            "hdc_acts and hdc_centers must agree on the number of head-direction cells."
+        )
+    order = np.argsort(np.mod(hdc_centers, 2 * np.pi))
+    return hdc_acts[..., order], hdc_centers[order]
+
+
+def _make_animation_title(title_prefix: str, traj_idx: int, step_idx: int, total_steps: int) -> str:
+    """Build a consistent animation title across writer and chunked render paths."""
+    return f"{title_prefix} #{traj_idx}  -  step {step_idx} / {total_steps}"
+
+
+def _build_frame_chunks(frame_indices, num_workers: int):
+    """Split sequential frame indices into evenly sized worker chunks."""
+    chunk_size = max(1, (len(frame_indices) + num_workers - 1) // max(num_workers, 1))
+    return [
+        [(j, frame_indices[j]) for j in range(start, min(start + chunk_size, len(frame_indices)))]
+        for start in range(0, len(frame_indices), chunk_size)
+    ]
+
+
+def _save_animation_frame(fig, path: str) -> None:
+    """Persist one rendered animation frame, preferring a fast canvas copy path."""
     try:
-        from tqdm.auto import tqdm as _local_tqdm
+        from PIL import Image
     except ImportError:
-        _local_tqdm = None
+        Image = None
 
-    (traj_idx, target_pos, pred_pos, pc_acts, hdc_acts,
-     pc_centers, env_size, pc_vmax,
-     fps, step, out_path) = args
+    if Image is not None:
+        fig.canvas.draw()
+        rgba = np.asarray(fig.canvas.buffer_rgba())
+        Image.fromarray(rgba[:, :, :3]).save(path, optimize=False, compress_level=1)
+        return
 
-    T = target_pos.shape[0]
-    frame_indices = list(range(0, T, max(1, step)))
-    n_hdc = hdc_acts.shape[1]
-    hdc_dirs = np.linspace(0, 2 * np.pi, n_hdc, endpoint=False)
-    hdc_width = 2 * np.pi / n_hdc
-    half = env_size / 2.0
-    safe_vmax = max(float(pc_vmax), 1e-8)
-
-    # ------------------------------------------------------------------
-    # Build figure and artists ONCE
-    # ------------------------------------------------------------------
-    fig = plt.figure(figsize=(13, 4.5), facecolor="#1a1a2e")
-    fig.subplots_adjust(left=0.05, right=0.97, top=0.88, bottom=0.1, wspace=0.35)
-
-    ax_traj = fig.add_subplot(1, 3, 1)
-    ax_pc   = fig.add_subplot(1, 3, 2)
-    ax_hdc  = fig.add_subplot(1, 3, 3, projection="polar")
-
-    for ax in (ax_traj, ax_pc):
-        ax.set_facecolor("#0d0d1a")
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#444466")
-    ax_hdc.set_facecolor("#0d0d1a")
-    ax_hdc.spines["polar"].set_edgecolor("#444466")
-
-    title_txt = fig.suptitle(
-        f"Eval traj #{traj_idx}  —  step 0 / {T}",
-        color="#ccccee", fontsize=11,
-    )
-
-    # Panel 1 — trajectory
-    ax_traj.add_patch(mpatches.FancyBboxPatch(
-        (-half, -half), env_size, env_size,
-        boxstyle="square,pad=0", linewidth=1.2,
-        edgecolor="#5566aa", facecolor="none",
-    ))
-    ax_traj.set_xlim(-half * 1.08, half * 1.08)
-    ax_traj.set_ylim(-half * 1.08, half * 1.08)
-    ax_traj.set_aspect("equal")
-    ax_traj.set_title("Trajectory", color="#aaaacc", fontsize=9)
-    ax_traj.tick_params(colors="#666688", labelsize=7)
-
-    (line_actual,) = ax_traj.plot([], [], lw=1.0, color="#4488ff", alpha=0.7, label="actual")
-    (dot_actual,)  = ax_traj.plot([], [], "o", ms=5, color="#ffdd44", zorder=5)
-    (line_pred,)   = ax_traj.plot([], [], lw=1.0, color="#ff6644", alpha=0.7,
-                                  linestyle="--", label="predicted")
-    (dot_pred,)    = ax_traj.plot([], [], "s", ms=4, color="#ffaa44", zorder=5)
-    ax_traj.legend(fontsize=6, loc="upper right", labelcolor="#aaaacc",
-                   facecolor="#1a1a2e", edgecolor="#444466")
-
-    # Panel 2 — PC activation spatial scatter
-    ax_pc.set_xlim(-half, half)
-    ax_pc.set_ylim(-half, half)
-    ax_pc.set_aspect("equal")
-    ax_pc.set_title("Place cells", color="#aaaacc", fontsize=9)
-    ax_pc.tick_params(colors="#666688", labelsize=7)
-    sc_pc = ax_pc.scatter(
-        pc_centers[:, 0], pc_centers[:, 1],
-        c=pc_acts[0], cmap="hot",
-        s=18, vmin=0.0, vmax=safe_vmax,
-    )
-    fig.colorbar(sc_pc, ax=ax_pc, fraction=0.046, pad=0.04).ax.tick_params(
-        colors="#aaaacc", labelsize=6,
-    )
-
-    # Panel 3 — HDC polar bar chart
-    bars_hdc = ax_hdc.bar(
-        hdc_dirs, hdc_acts[0],
-        width=hdc_width, color="#4fc3f7", alpha=0.85, align="center",
-    )
-    ax_hdc.set_ylim(0, max(float(hdc_acts.max()), 1.0 / n_hdc))
-    ax_hdc.set_title("Head direction cells", color="#aaaacc", fontsize=9, pad=8)
-    ax_hdc.tick_params(colors="#666688", labelsize=7)
-    ax_hdc.yaxis.label.set_color("#666688")
-
-    # ------------------------------------------------------------------
-    # Render frames via FFMpegWriter (pipes raw frames directly to ffmpeg)
-    # ------------------------------------------------------------------
-    def _make_writer(path):
-        try:
-            w = FFMpegWriter(fps=fps, metadata={"title": f"Eval traj #{traj_idx}"})
-            return w, path
-        except Exception:
-            gif_path = path.replace(".mp4", ".gif")
-            return PillowWriter(fps=fps), gif_path
-
-    writer, out_path = _make_writer(out_path)
-
-    pbar = (
-        _local_tqdm(frame_indices,
-                    desc=f"render:{os.path.basename(out_path)}",
-                    unit="frame")
-        if _local_tqdm is not None else frame_indices
-    )
-
-    with writer.saving(fig, out_path, dpi=110):
-        for t in pbar:
-            title_txt.set_text(f"Eval traj #{traj_idx}  —  step {t} / {T}")
-            line_actual.set_data(target_pos[: t + 1, 0], target_pos[: t + 1, 1])
-            dot_actual.set_data([target_pos[t, 0]], [target_pos[t, 1]])
-            line_pred.set_data(pred_pos[: t + 1, 0], pred_pos[: t + 1, 1])
-            dot_pred.set_data([pred_pos[t, 0]], [pred_pos[t, 1]])
-            sc_pc.set_array(pc_acts[t])
-            for bar, h in zip(bars_hdc, hdc_acts[t]):
-                bar.set_height(h)
-            writer.grab_frame()
-
-    plt.close(fig)
-    return out_path
+    fig.savefig(path, dpi=110)
 
 
-def _render_eval_traj_chunk(task) -> int:
-    """Render a contiguous chunk of frames to PNG files (parallel-safe worker).
-
-    task is a tuple:
-        traj_idx      : int
-        target_pos    : (T, 2)   full trajectory — needed for growing trail
-        pred_pos      : (T, 2)
-        pc_acts       : (T, n_pc)
-        hdc_acts      : (T, n_hdc)
-        pc_centers    : (n_pc, 2)
-        env_size      : float
-        pc_vmax       : float
-        frames_subset : list of (out_idx, timestep) pairs for this chunk
-        frames_dir    : str  temporary directory for PNG output
-    """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    import numpy as np
-    import os
-    try:
-        from PIL import Image as _Image
-        _has_pil = True
-    except ImportError:
-        _has_pil = False
-
-    (traj_idx, target_pos, pred_pos, pc_acts, hdc_acts,
-     pc_centers, env_size, pc_vmax,
-     frames_subset, frames_dir) = task
-
-    T = target_pos.shape[0]
-    n_hdc = hdc_acts.shape[1]
-    hdc_dirs = np.linspace(0, 2 * np.pi, n_hdc, endpoint=False)
-    hdc_width = 2 * np.pi / n_hdc
-    half = env_size / 2.0
-    safe_vmax = max(float(pc_vmax), 1e-8)
-
-    # Build figure and artists ONCE for this entire chunk.
-    fig = plt.figure(figsize=(13, 4.5), facecolor="#1a1a2e")
-    fig.subplots_adjust(left=0.05, right=0.97, top=0.88, bottom=0.1, wspace=0.35)
-    ax_traj = fig.add_subplot(1, 3, 1)
-    ax_pc   = fig.add_subplot(1, 3, 2)
-    ax_hdc  = fig.add_subplot(1, 3, 3, projection="polar")
-
-    for ax in (ax_traj, ax_pc):
-        ax.set_facecolor("#0d0d1a")
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#444466")
-    ax_hdc.set_facecolor("#0d0d1a")
-    ax_hdc.spines["polar"].set_edgecolor("#444466")
-
-    title_txt = fig.suptitle("", color="#ccccee", fontsize=11)
-
-    ax_traj.add_patch(mpatches.FancyBboxPatch(
-        (-half, -half), env_size, env_size,
-        boxstyle="square,pad=0", linewidth=1.2,
-        edgecolor="#5566aa", facecolor="none",
-    ))
-    ax_traj.set_xlim(-half * 1.08, half * 1.08)
-    ax_traj.set_ylim(-half * 1.08, half * 1.08)
-    ax_traj.set_aspect("equal")
-    ax_traj.set_title("Trajectory", color="#aaaacc", fontsize=9)
-    ax_traj.tick_params(colors="#666688", labelsize=7)
-
-    (line_actual,) = ax_traj.plot([], [], lw=1.0, color="#4488ff", alpha=0.7, label="actual")
-    (dot_actual,)  = ax_traj.plot([], [], "o", ms=5, color="#ffdd44", zorder=5)
-    (line_pred,)   = ax_traj.plot([], [], lw=1.0, color="#ff6644", alpha=0.7,
-                                  linestyle="--", label="predicted")
-    (dot_pred,)    = ax_traj.plot([], [], "s", ms=4, color="#ffaa44", zorder=5)
-    ax_traj.legend(fontsize=6, loc="upper right", labelcolor="#aaaacc",
-                   facecolor="#1a1a2e", edgecolor="#444466")
-
-    ax_pc.set_xlim(-half, half)
-    ax_pc.set_ylim(-half, half)
-    ax_pc.set_aspect("equal")
-    ax_pc.set_title("Place cells", color="#aaaacc", fontsize=9)
-    ax_pc.tick_params(colors="#666688", labelsize=7)
-    t0 = frames_subset[0][1]
-    sc_pc = ax_pc.scatter(
-        pc_centers[:, 0], pc_centers[:, 1],
-        c=pc_acts[t0], cmap="hot",
-        s=18, vmin=0.0, vmax=safe_vmax,
-    )
-    fig.colorbar(sc_pc, ax=ax_pc, fraction=0.046, pad=0.04).ax.tick_params(
-        colors="#aaaacc", labelsize=6,
-    )
-
-    bars_hdc = ax_hdc.bar(
-        hdc_dirs, hdc_acts[t0],
-        width=hdc_width, color="#4fc3f7", alpha=0.85, align="center",
-    )
-    ax_hdc.set_ylim(0, max(float(hdc_acts.max()), 1.0 / n_hdc))
-    ax_hdc.set_title("Head direction cells", color="#aaaacc", fontsize=9, pad=8)
-    ax_hdc.tick_params(colors="#666688", labelsize=7)
-    ax_hdc.yaxis.label.set_color("#666688")
-
-    def _save_png(path):
-        if _has_pil:
-            fig.canvas.draw()
-            rgba = np.asarray(fig.canvas.buffer_rgba())
-            _Image.fromarray(rgba[:, :, :3]).save(path, optimize=False, compress_level=1)
-        else:
-            fig.savefig(path, dpi=110)
-
-    try:
-        for out_idx, t in frames_subset:
-            title_txt.set_text(f"Eval traj #{traj_idx}  —  step {t} / {T}")
-            line_actual.set_data(target_pos[: t + 1, 0], target_pos[: t + 1, 1])
-            dot_actual.set_data([target_pos[t, 0]], [target_pos[t, 1]])
-            line_pred.set_data(pred_pos[: t + 1, 0], pred_pos[: t + 1, 1])
-            dot_pred.set_data([pred_pos[t, 0]], [pred_pos[t, 1]])
-            sc_pc.set_array(pc_acts[t])
-            for bar, h in zip(bars_hdc, hdc_acts[t]):
-                bar.set_height(h)
-            _save_png(os.path.join(frames_dir, f"frame_{out_idx:06d}.png"))
-    finally:
-        plt.close(fig)
-
-    return len(frames_subset)
-
-
-def _encode_anim_frames(frames_dir: str, save_path: str, fps: int, n_frames: int) -> None:
+def _encode_animation_frames(frames_dir: str, save_path: str, fps: int, n_frames: int) -> None:
     """Encode sequentially-numbered PNG frames into an MP4 via ffmpeg."""
     cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-framerate", str(fps),
-        "-i", os.path.join(frames_dir, "frame_%06d.png"),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-progress", "pipe:1", "-nostats",
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-framerate",
+        str(fps),
+        "-i",
+        os.path.join(frames_dir, "frame_%06d.png"),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-progress",
+        "pipe:1",
+        "-nostats",
         save_path,
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, bufsize=1)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
     bar = (
         _tqdm(total=n_frames, desc=f"encode:{os.path.basename(save_path)}", unit="frame")
-        if _tqdm is not None else None
+        if _tqdm is not None
+        else None
     )
     last = 0
     try:
@@ -762,19 +610,283 @@ def _encode_anim_frames(frames_dir: str, save_path: str, fps: int, n_frames: int
             bar.close()
 
 
-def generate_eval_animation(
+def _build_animation_artists(
     target_pos: np.ndarray,
     pred_pos: np.ndarray,
     pc_acts: np.ndarray,
     hdc_acts: np.ndarray,
     pc_centers: np.ndarray,
+    hdc_centers: np.ndarray,
+    env_size: float,
+    pc_vmax: float,
+    title_prefix: str,
+    pred_label: str,
+):
+    """Create the shared 3-panel animation figure and artists."""
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    hdc_acts, hdc_centers = _sort_hdc_for_animation(hdc_acts, hdc_centers)
+    total_steps = target_pos.shape[0]
+    n_hdc = hdc_acts.shape[1]
+    half = env_size / 2.0
+    safe_vmax = max(float(pc_vmax), 1e-8)
+    hdc_width = (2 * np.pi / max(n_hdc, 1)) * 0.9
+
+    fig = plt.figure(figsize=(13, 4.5), facecolor="#1a1a2e")
+    fig.subplots_adjust(left=0.05, right=0.97, top=0.88, bottom=0.1, wspace=0.35)
+
+    ax_traj = fig.add_subplot(1, 3, 1)
+    ax_pc = fig.add_subplot(1, 3, 2)
+    ax_hdc = fig.add_subplot(1, 3, 3, projection="polar")
+
+    for ax in (ax_traj, ax_pc):
+        ax.set_facecolor("#0d0d1a")
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#444466")
+    ax_hdc.set_facecolor("#0d0d1a")
+    ax_hdc.spines["polar"].set_edgecolor("#444466")
+
+    title_txt = fig.suptitle(
+        _make_animation_title(title_prefix, 0, 0, total_steps),
+        color="#ccccee",
+        fontsize=11,
+    )
+
+    ax_traj.add_patch(
+        mpatches.FancyBboxPatch(
+            (-half, -half),
+            env_size,
+            env_size,
+            boxstyle="square,pad=0",
+            linewidth=1.2,
+            edgecolor="#5566aa",
+            facecolor="none",
+        )
+    )
+    ax_traj.set_xlim(-half * 1.08, half * 1.08)
+    ax_traj.set_ylim(-half * 1.08, half * 1.08)
+    ax_traj.set_aspect("equal")
+    ax_traj.set_title("Trajectory", color="#aaaacc", fontsize=9)
+    ax_traj.tick_params(colors="#666688", labelsize=7)
+
+    (line_actual,) = ax_traj.plot([], [], lw=1.0, color="#4488ff", alpha=0.7, label="actual")
+    (dot_actual,) = ax_traj.plot([], [], "o", ms=5, color="#ffdd44", zorder=5)
+    (line_pred,) = ax_traj.plot(
+        [], [], lw=1.0, color="#ff6644", alpha=0.7, linestyle="--", label=pred_label
+    )
+    (dot_pred,) = ax_traj.plot([], [], "s", ms=4, color="#ffaa44", zorder=5)
+    ax_traj.legend(
+        fontsize=6,
+        loc="upper right",
+        labelcolor="#aaaacc",
+        facecolor="#1a1a2e",
+        edgecolor="#444466",
+    )
+
+    ax_pc.set_xlim(-half, half)
+    ax_pc.set_ylim(-half, half)
+    ax_pc.set_aspect("equal")
+    ax_pc.set_title("Place cells", color="#aaaacc", fontsize=9)
+    ax_pc.tick_params(colors="#666688", labelsize=7)
+    sc_pc = ax_pc.scatter(
+        pc_centers[:, 0],
+        pc_centers[:, 1],
+        c=pc_acts[0],
+        cmap="hot",
+        s=18,
+        vmin=0.0,
+        vmax=safe_vmax,
+    )
+    fig.colorbar(sc_pc, ax=ax_pc, fraction=0.046, pad=0.04).ax.tick_params(
+        colors="#aaaacc", labelsize=6
+    )
+
+    bars_hdc = ax_hdc.bar(
+        hdc_centers,
+        hdc_acts[0],
+        width=hdc_width,
+        color="#4fc3f7",
+        alpha=0.85,
+        align="center",
+    )
+    ax_hdc.set_ylim(0, max(float(hdc_acts.max()), 1.0 / max(n_hdc, 1)))
+    ax_hdc.set_title("Head direction cells", color="#aaaacc", fontsize=9, pad=8)
+    ax_hdc.tick_params(colors="#666688", labelsize=7)
+    ax_hdc.yaxis.label.set_color("#666688")
+
+    artists = {
+        "title_txt": title_txt,
+        "line_actual": line_actual,
+        "dot_actual": dot_actual,
+        "line_pred": line_pred,
+        "dot_pred": dot_pred,
+        "sc_pc": sc_pc,
+        "bars_hdc": bars_hdc,
+    }
+    arrays = {
+        "target_pos": target_pos,
+        "pred_pos": pred_pos,
+        "pc_acts": pc_acts,
+        "hdc_acts": hdc_acts,
+        "total_steps": total_steps,
+        "title_prefix": title_prefix,
+    }
+    return fig, artists, arrays
+
+
+def _update_animation_frame(artists: dict, arrays: dict, traj_idx: int, t: int) -> None:
+    """Update the shared 3-panel animation figure to one timestep."""
+    target_pos = arrays["target_pos"]
+    pred_pos = arrays["pred_pos"]
+    pc_acts = arrays["pc_acts"]
+    hdc_acts = arrays["hdc_acts"]
+    total_steps = arrays["total_steps"]
+    title_prefix = arrays["title_prefix"]
+
+    artists["title_txt"].set_text(_make_animation_title(title_prefix, traj_idx, t, total_steps))
+    artists["line_actual"].set_data(target_pos[: t + 1, 0], target_pos[: t + 1, 1])
+    artists["dot_actual"].set_data([target_pos[t, 0]], [target_pos[t, 1]])
+    artists["line_pred"].set_data(pred_pos[: t + 1, 0], pred_pos[: t + 1, 1])
+    artists["dot_pred"].set_data([pred_pos[t, 0]], [pred_pos[t, 1]])
+    artists["sc_pc"].set_array(pc_acts[t])
+    for bar, h in zip(artists["bars_hdc"], hdc_acts[t]):
+        bar.set_height(h)
+
+
+def _render_trajectory_animation(args) -> str:
+    """Render a single 3-panel trajectory animation using a direct writer path."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FFMpegWriter, PillowWriter
+
+    try:
+        from tqdm.auto import tqdm as _local_tqdm
+    except ImportError:
+        _local_tqdm = None
+
+    (
+        traj_idx,
+        target_pos,
+        pred_pos,
+        pc_acts,
+        hdc_acts,
+        pc_centers,
+        hdc_centers,
+        env_size,
+        pc_vmax,
+        fps,
+        step,
+        out_path,
+        title_prefix,
+        pred_label,
+    ) = args
+
+    frame_indices = list(range(0, target_pos.shape[0], max(1, step)))
+    fig, artists, arrays = _build_animation_artists(
+        target_pos,
+        pred_pos,
+        pc_acts,
+        hdc_acts,
+        pc_centers,
+        hdc_centers,
+        env_size,
+        pc_vmax,
+        title_prefix,
+        pred_label,
+    )
+
+    def _make_writer(path):
+        try:
+            writer = FFMpegWriter(
+                fps=fps,
+                metadata={"title": f"{title_prefix} #{traj_idx}"},
+            )
+            return writer, path
+        except Exception:
+            gif_path = path.replace(".mp4", ".gif")
+            return PillowWriter(fps=fps), gif_path
+
+    writer, out_path = _make_writer(out_path)
+    pbar = (
+        _local_tqdm(frame_indices, desc=f"render:{os.path.basename(out_path)}", unit="frame")
+        if _local_tqdm is not None
+        else frame_indices
+    )
+
+    with writer.saving(fig, out_path, dpi=110):
+        for t in pbar:
+            _update_animation_frame(artists, arrays, traj_idx, t)
+            writer.grab_frame()
+
+    plt.close(fig)
+    return out_path
+
+
+def _render_trajectory_animation_chunk(task) -> int:
+    """Render one worker chunk of a 3-panel trajectory animation to PNG frames."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    (
+        traj_idx,
+        target_pos,
+        pred_pos,
+        pc_acts,
+        hdc_acts,
+        pc_centers,
+        hdc_centers,
+        env_size,
+        pc_vmax,
+        frames_subset,
+        frames_dir,
+        title_prefix,
+        pred_label,
+    ) = task
+
+    fig, artists, arrays = _build_animation_artists(
+        target_pos,
+        pred_pos,
+        pc_acts,
+        hdc_acts,
+        pc_centers,
+        hdc_centers,
+        env_size,
+        pc_vmax,
+        title_prefix,
+        pred_label,
+    )
+
+    try:
+        for out_idx, t in frames_subset:
+            _update_animation_frame(artists, arrays, traj_idx, t)
+            _save_animation_frame(fig, os.path.join(frames_dir, f"frame_{out_idx:06d}.png"))
+    finally:
+        plt.close(fig)
+
+    return len(frames_subset)
+
+
+def generate_trajectory_animation(
+    target_pos: np.ndarray,
+    pred_pos: np.ndarray,
+    pc_acts: np.ndarray,
+    hdc_acts: np.ndarray,
+    pc_centers: np.ndarray,
+    hdc_centers: np.ndarray,
     env_size: float,
     save_path: str,
     fps: int = 20,
     step: int = 4,
     num_workers: int = 4,
+    title_prefix: str = "Trajectory",
+    pred_label: str = "predicted",
 ) -> None:
-    """Generate 3-panel eval animation MP4(s): trajectory / PC activation / HDC activation.
+    """Generate a 3-panel trajectory animation MP4 or GIF.
 
     When ``num_workers == 1``: uses matplotlib ``FFMpegWriter`` — no temporary
     files, with a GIF fallback when ffmpeg is absent.
@@ -784,21 +896,24 @@ def generate_eval_animation(
     when N > 1.
 
     Panels:
-      1. Ground-truth trajectory (solid) vs predicted trajectory (dashed)
+      1. Ground-truth trajectory (solid) vs decoded/reference trajectory (dashed)
       2. Place-cell softmax probability — spatial scatter with hot colormap
       3. Head-direction-cell softmax probability — polar bar chart
 
     Args:
         target_pos:  (N, T, 2)    ground-truth positions.
-        pred_pos:    (N, T, 2)    decoded predicted positions.
+        pred_pos:    (N, T, 2)    decoded or predicted positions.
         pc_acts:     (N, T, n_pc) place-cell softmax probabilities.
         hdc_acts:    (N, T, n_hdc) head-direction-cell softmax probabilities.
-        pc_centers:  (n_pc, 2)   2-D centre positions of place cells.
+        pc_centers:  (n_pc, 2)    2-D centre positions of place cells.
+        hdc_centers: (n_hdc,)     preferred HDC directions in radians.
         env_size:    float  side length of the square environment (metres).
         save_path:   destination MP4 path.
         fps:         playback frame rate.
         step:        render every *step*-th timestep (default 4 → 4× speed).
         num_workers: parallel chunk workers (> 1 enables parallel PNG mode).
+        title_prefix: per-trajectory title prefix.
+        pred_label: label for the second trajectory line.
     """
     os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
 
@@ -807,8 +922,13 @@ def generate_eval_animation(
     if N == 0 or T == 0:
         raise ValueError("Cannot animate: empty trajectory data.")
 
-    # Global colour ranges shared across all trajectories for consistency.
     pc_vmax = float(pc_acts.max())
+    num_workers = max(1, int(num_workers))
+    fps = max(1, int(fps))
+    step = max(1, int(step))
+
+    if num_workers > 1 and shutil.which("ffmpeg") is None:
+        num_workers = 1
 
     def _traj_path(i: int) -> str:
         if N == 1:
@@ -816,61 +936,70 @@ def generate_eval_animation(
         base, ext = os.path.splitext(save_path)
         return f"{base}_traj{i:04d}{ext}"
 
-    # ── single-threaded: FFMpegWriter (no temp files, GIF fallback) ──────────
     if num_workers <= 1:
         args_list = [
-            (i, target_pos[i], pred_pos[i], pc_acts[i], hdc_acts[i],
-             pc_centers, env_size, pc_vmax,
-             fps, step, _traj_path(i))
+            (
+                i,
+                target_pos[i],
+                pred_pos[i],
+                pc_acts[i],
+                hdc_acts[i],
+                pc_centers,
+                hdc_centers,
+                env_size,
+                pc_vmax,
+                fps,
+                step,
+                _traj_path(i),
+                title_prefix,
+                pred_label,
+            )
             for i in range(N)
         ]
         for a in args_list:
-            saved = _render_eval_traj(a)
-            print(f"Eval animation saved to {saved}")
+            saved = _render_trajectory_animation(a)
+            print(f"Animation saved to {saved}")
         return
 
-    # ── parallel: chunk-based PNG rendering → ffmpeg encode ──────────────────
-    all_frame_indices = list(range(0, T, max(1, step)))
+    all_frame_indices = list(range(0, T, step))
     n_frames = len(all_frame_indices)
-
-    # Assign sequential output indices so ffmpeg gets frame_000000.png ...
-    # Divide frames across num_workers chunks (as evenly as possible).
-    chunk_size = max(1, (n_frames + num_workers - 1) // num_workers)
-    frame_chunks = [
-        [(j, all_frame_indices[j])
-         for j in range(start, min(start + chunk_size, n_frames))]
-        for start in range(0, n_frames, chunk_size)
-    ]
+    frame_chunks = _build_frame_chunks(all_frame_indices, num_workers=num_workers)
     actual_workers = min(num_workers, len(frame_chunks))
 
     for traj_i in range(N):
         out_path = _traj_path(traj_i)
 
         tasks = [
-            (traj_i,
-             target_pos[traj_i], pred_pos[traj_i],
-             pc_acts[traj_i], hdc_acts[traj_i],
-             pc_centers, env_size, pc_vmax,
-             chunk, "")  # frames_dir filled in below
+            (
+                traj_i,
+                target_pos[traj_i],
+                pred_pos[traj_i],
+                pc_acts[traj_i],
+                hdc_acts[traj_i],
+                pc_centers,
+                hdc_centers,
+                env_size,
+                pc_vmax,
+                chunk,
+                "",
+                title_prefix,
+                pred_label,
+            )
             for chunk in frame_chunks
         ]
 
         render_bar = (
-            _tqdm(total=n_frames,
-                  desc=f"render:{os.path.basename(out_path)}",
-                  unit="frame")
-            if _tqdm is not None else None
+            _tqdm(total=n_frames, desc=f"render:{os.path.basename(out_path)}", unit="frame")
+            if _tqdm is not None
+            else None
         )
 
         with tempfile.TemporaryDirectory(prefix="eval_anim_") as frames_dir:
-            # Patch frames_dir into each task tuple.
-            tasks = [t[:-1] + (frames_dir,) for t in tasks]
+            tasks = [t[:-3] + (frames_dir,) + t[-2:] for t in tasks]
 
             try:
                 with ProcessPoolExecutor(max_workers=actual_workers) as executor:
-                    futures = [
-                        executor.submit(_render_eval_traj_chunk, t) for t in tasks
-                    ]
+                    futures = [executor.submit(_render_trajectory_animation_chunk, t) for t in tasks]
                     for fut in as_completed(futures):
                         rendered = fut.result()
                         if render_bar is not None:
@@ -879,10 +1008,40 @@ def generate_eval_animation(
                 if render_bar is not None:
                     render_bar.close()
 
-            _encode_anim_frames(frames_dir, out_path, fps=max(fps, 1),
-                                n_frames=n_frames)
+            _encode_animation_frames(frames_dir, out_path, fps=fps, n_frames=n_frames)
 
-        print(f"Eval animation saved to {out_path}")
+        print(f"Animation saved to {out_path}")
+
+
+def generate_eval_animation(
+    target_pos: np.ndarray,
+    pred_pos: np.ndarray,
+    pc_acts: np.ndarray,
+    hdc_acts: np.ndarray,
+    pc_centers: np.ndarray,
+    hdc_centers: np.ndarray,
+    env_size: float,
+    save_path: str,
+    fps: int = 20,
+    step: int = 4,
+    num_workers: int = 4,
+) -> None:
+    """Backward-compatible wrapper for eval animation exports."""
+    generate_trajectory_animation(
+        target_pos,
+        pred_pos,
+        pc_acts,
+        hdc_acts,
+        pc_centers,
+        hdc_centers,
+        env_size,
+        save_path,
+        fps=fps,
+        step=step,
+        num_workers=num_workers,
+        title_prefix="Eval traj",
+        pred_label="predicted",
+    )
 
 
 def get_scores_and_plot(
