@@ -62,6 +62,27 @@ class TrajectoryDataset(Dataset):
         rng = np.random.default_rng(seed)
         self._data = self._generate_all(rng)
 
+    def attach_ensembles(self, pc_ensembles, hdc_ensembles) -> None:
+        """Attach ensembles and pre-compute initial-condition encodings.
+
+        The full initial-condition tensor is cheap to store once for all
+        samples. Target encodings stay per-sample so DataLoader workers can
+        compute them in parallel inside ``__getitem__``.
+        """
+        self._pc_ens = pc_ensembles
+        self._hdc_ens = hdc_ensembles
+
+        init_pos = self._data["init_pos"][:, np.newaxis, :]
+        init_hd = self._data["init_hd"][:, np.newaxis, :]
+
+        parts = []
+        for ens in pc_ensembles:
+            parts.append(ens.get_init(init_pos)[:, 0, :])
+        for ens in hdc_ensembles:
+            parts.append(ens.get_init(init_hd)[:, 0, :])
+
+        self._init_cond = np.concatenate(parts, axis=-1).astype(np.float32)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -182,13 +203,27 @@ class TrajectoryDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx) -> dict:
-        return {
+        item = {
             "init_pos":   self._data["init_pos"][idx],
             "init_hd":    self._data["init_hd"][idx],
             "ego_vel":    self._data["ego_vel"][idx],
             "target_pos": self._data["target_pos"][idx],
             "target_hd":  self._data["target_hd"][idx],
         }
+
+        if hasattr(self, "_pc_ens"):
+            item["init_cond"] = self._init_cond[idx]
+
+            pos = self._data["target_pos"][idx][np.newaxis, :]
+            hd = self._data["target_hd"][idx][np.newaxis, :]
+
+            for i, ens in enumerate(self._pc_ens):
+                item[f"pc_targets_{i}"] = ens.get_targets(pos)[0].astype(np.float32)
+
+            for i, ens in enumerate(self._hdc_ens):
+                item[f"hdc_targets_{i}"] = ens.get_targets(hd)[0].astype(np.float32)
+
+        return item
 
     # ------------------------------------------------------------------
     # Persistence
@@ -259,20 +294,25 @@ class TrajectoryDataset(Dataset):
 # DataLoader factory
 # ---------------------------------------------------------------------------
 
-def get_dataloader(cfg, data_path: str = None) -> DataLoader:
+def get_dataloader(cfg, data_path: str = None, pc_ens=None, hdc_ens=None) -> DataLoader:
     """Build a DataLoader from a config object or a saved .npz file.
 
     When data_path is given, trajectories are loaded from disk (fast, no
     generation overhead).  When data_path is None, trajectories are
     generated on-the-fly every call (original behaviour).
 
+    When ensembles are attached, initial conditions are pre-computed once and
+    targets are encoded per-sample inside DataLoader workers.
+
     Args:
         cfg:       config namespace with task / training attributes.
         data_path: optional path to a .npz file created by
                    TrajectoryDataset.save() or generate_data.py.
+        pc_ens:    optional list of place-cell ensembles.
+        hdc_ens:   optional list of head-direction-cell ensembles.
 
     Returns:
-        DataLoader with pin_memory=True and num_workers=4.
+        DataLoader with pin_memory=True and persistent workers enabled.
     """
     if data_path is not None:
         dataset = TrajectoryDataset.from_file(data_path)
@@ -286,10 +326,15 @@ def get_dataloader(cfg, data_path: str = None) -> DataLoader:
             seed=cfg.task.neurons_seed,
         )
 
+    if pc_ens is not None and hdc_ens is not None:
+        dataset.attach_ensembles(pc_ens, hdc_ens)
+
+    num_workers = 4
     return DataLoader(
         dataset,
         batch_size=cfg.training.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
+        persistent_workers=(num_workers > 0),
     )

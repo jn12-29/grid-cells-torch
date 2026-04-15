@@ -199,6 +199,9 @@ def train(cfg, data_path: str = None):
         weight_decay=cfg.training.weight_decay,
     )
 
+    scaler = torch.amp.GradScaler(device=device.type, enabled=(device.type == "cuda"))
+    logger.info("AMP enabled: %s", device.type == "cuda")
+
     # 4. GridScorer for evaluation
     starts = [0.2] * 10
     ends = list(np.linspace(0.4, 1.0, num=10))
@@ -218,8 +221,12 @@ def train(cfg, data_path: str = None):
     # 6. Training loop
     if data_path is not None:
         logger.info("Loading trajectories from %s", data_path)
-        # Pre-load once; same dataset is reused every epoch (shuffled by DataLoader)
-        _fixed_loader = get_dataloader(cfg, data_path=data_path)
+        _fixed_loader = get_dataloader(
+            cfg,
+            data_path=data_path,
+            pc_ens=pc_ens,
+            hdc_ens=hdc_ens,
+        )
     else:
         _fixed_loader = None
 
@@ -230,30 +237,42 @@ def train(cfg, data_path: str = None):
         loss_acc = []
 
         for step, batch in enumerate(dataloader):
-            batch = {k: v.to(device) for k, v in batch.items()}
-
-            init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
-            pc_targets, hdc_targets = encode_targets(batch, pc_ens, hdc_ens)
-
-            pc_logits, hdc_logits, _, _ = model(
-                init_cond, batch["ego_vel"], training=True
-            )
-
-            loss = sum(
-                ens.loss(logits, targets)
-                for ens, logits, targets in zip(pc_ens, pc_logits, pc_targets)
-            )
-            loss += sum(
-                ens.loss(logits, targets)
-                for ens, logits, targets in zip(hdc_ens, hdc_logits, hdc_targets)
-            )
-
             optimizer.zero_grad()
-            loss.backward()
+
+            batch = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
+            }
+
+            if "init_cond" in batch:
+                init_cond = batch["init_cond"].float()
+                pc_targets = [batch[f"pc_targets_{i}"] for i in range(len(pc_ens))]
+                hdc_targets = [batch[f"hdc_targets_{i}"] for i in range(len(hdc_ens))]
+            else:
+                init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
+                pc_targets, hdc_targets = encode_targets(batch, pc_ens, hdc_ens)
+
+            with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+                pc_logits, hdc_logits, _, _ = model(
+                    init_cond, batch["ego_vel"], training=True
+                )
+
+                loss = sum(
+                    ens.loss(logits, targets)
+                    for ens, logits, targets in zip(pc_ens, pc_logits, pc_targets)
+                )
+                loss += sum(
+                    ens.loss(logits, targets)
+                    for ens, logits, targets in zip(hdc_ens, hdc_logits, hdc_targets)
+                )
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_value_(
                 model.parameters(), cfg.training.grad_clip
             )
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             loss_acc.append(loss.item())
             logger.debug("epoch=%4d  step=%4d  loss=%.4f", epoch, step, loss.item())
 

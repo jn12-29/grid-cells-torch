@@ -47,6 +47,12 @@ python generate_data.py --output data/train.npz --visualize
 python train.py --data_path data/train.npz
 ```
 
+使用 `--data_path` 时，训练路径会启用当前实现里的几项性能优化：
+1. `model.py` 使用 `nn.LSTM(batch_first=True)`，不再手写 `LSTMCell` 时间循环。
+2. `dataset.py` 会预计算 `init_cond`，并在 DataLoader worker 中按样本编码 `pc_targets_i` / `hdc_targets_i`。
+3. DataLoader 启用 `persistent_workers=True`，避免每个 epoch 重建 worker。
+4. CUDA 训练自动启用 AMP（`torch.autocast` + `GradScaler`）。
+
 ### 不保存数据（原始模式）
 
 ```bash
@@ -83,7 +89,7 @@ train(cfg)
 
 ## 轨迹数据生成
 
-本项目不依赖任何外部数据文件。每个 epoch 开始时，`get_dataloader` 会**在内存中实时生成**一批随机游走轨迹，模拟啮齿动物在方形环境中的运动。
+本项目不依赖任何外部数据文件。`get_dataloader` 可以直接在内存中生成随机游走轨迹，也可以从 `generate_data.py` 导出的 `.npz` 文件加载。训练使用预生成数据时，会额外复用预编码的初始条件并把目标编码下放到 DataLoader worker 中，以减少主进程 CPU 开销。
 
 ### 运动模型
 

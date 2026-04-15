@@ -78,3 +78,17 @@ def test_init_cond_consistent_with_manual_encode():
     }
     ref = encode_initial_conditions(batch, pc_ens, hdc_ens).numpy()[0]  # (init_cond_size,)
     assert np.allclose(item["init_cond"], ref, atol=1e-5)
+
+
+def test_get_dataloader_attaches_ensembles_and_keeps_workers():
+    """DataLoader exposes pre-encoded fields when ensembles are provided."""
+    cfg = make_cfg()
+    pc_ens, hdc_ens = make_ensembles()
+
+    loader = get_dataloader(cfg, pc_ens=pc_ens, hdc_ens=hdc_ens)
+    batch = next(iter(loader))
+
+    assert loader.persistent_workers is True
+    assert "init_cond" in batch
+    assert "pc_targets_0" in batch
+    assert "hdc_targets_0" in batch
