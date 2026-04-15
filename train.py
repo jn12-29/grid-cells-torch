@@ -33,6 +33,7 @@ from dataset import get_dataloader
 from model import GridCellsRNN
 from scores import GridScorer
 from utils import (
+    compute_position_mse,
     get_place_cell_ensembles,
     get_head_direction_ensembles,
     encode_initial_conditions,
@@ -315,12 +316,17 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, w
         cfg.model.nh_bottleneck
     )
     eval_start = time.time()
+    eval_pos_mse_sum = 0.0
+    eval_pos_batches = 0
 
     with torch.no_grad():
         for batch in eval_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
-            _, _, bottleneck, _ = model(init_cond, batch["ego_vel"], training=False)
+            pc_logits, _, bottleneck, _ = model(init_cond, batch["ego_vel"], training=False)
+            pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
+            eval_pos_mse_sum += float(pos_mse.item())
+            eval_pos_batches += 1
             scorer.accumulate_ratemaps(
                 batch["target_pos"].detach().cpu().numpy(),
                 bottleneck.detach().cpu().numpy(),
@@ -343,15 +349,18 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, w
     )
     logger = logging.getLogger("grid_cells")
     eval_seconds = time.time() - eval_start
+    eval_pos_mse = eval_pos_mse_sum / max(eval_pos_batches, 1)
     logger.info(
-        "eval epoch=%d  grid_score_60 max=%.4f  grid_score_90 max=%.4f  seconds=%.1f",
+        "eval epoch=%d  pos_mse=%.6f  grid_score_60 max=%.4f  grid_score_90 max=%.4f  seconds=%.1f",
         epoch,
+        eval_pos_mse,
         scores[0].max(),
         scores[1].max(),
         eval_seconds,
     )
 
     if writer is not None:
+        writer.add_scalar("eval/pos_mse", eval_pos_mse, epoch)
         writer.add_scalar("eval/grid_score_60_max", float(scores[0].max()), epoch)
         writer.add_scalar("eval/grid_score_90_max", float(scores[1].max()), epoch)
         writer.add_scalar("eval/seconds", eval_seconds, epoch)
@@ -510,6 +519,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
             )
             model.train()
             loss_acc = []
+            pos_mse_acc = []
             epoch_start = time.time()
 
             use_tqdm = getattr(cfg.training, "use_tqdm", True) and tqdm is not None
@@ -548,6 +558,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
                 pc_logits, hdc_logits, _, _ = model(
                     init_cond, batch["ego_vel"], training=True
                 )
+                pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
 
                 loss = sum(
                     ens.loss(logits, targets)
@@ -567,13 +578,16 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
                 optimizer.step()
 
                 loss_value = loss.item()
+                pos_mse_value = float(pos_mse.item())
                 loss_acc.append(loss_value)
+                pos_mse_acc.append(pos_mse_value)
                 global_step += 1
 
                 if use_tqdm:
                     progress.set_postfix(
                         loss=f"{loss_value:.4f}",
                         avg=f"{np.mean(loss_acc):.4f}",
+                        pos_mse=f"{pos_mse_value:.6f}",
                     )
 
                 should_log_step = ((step + 1) % step_log_interval == 0) or (
@@ -581,22 +595,26 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
                 )
                 if writer is not None and should_log_step:
                     writer.add_scalar("train/loss_step", loss_value, global_step)
+                    writer.add_scalar("train/pos_mse_step", pos_mse_value, global_step)
 
             epoch_mean = float(np.mean(loss_acc))
             epoch_std = float(np.std(loss_acc))
+            epoch_pos_mse = float(np.mean(pos_mse_acc))
             epoch_time = time.time() - epoch_start
 
             logger.info(
-                "epoch=%4d  loss mean=%.4f  std=%.4f  seconds=%.1f",
+                "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  seconds=%.1f",
                 epoch,
                 epoch_mean,
                 epoch_std,
+                epoch_pos_mse,
                 epoch_time,
             )
 
             if writer is not None:
                 writer.add_scalar("train/loss_mean", epoch_mean, epoch)
                 writer.add_scalar("train/loss_std", epoch_std, epoch)
+                writer.add_scalar("train/pos_mse_mean", epoch_pos_mse, epoch)
                 writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
 
             if epoch % cfg.training.eval_every == 0:

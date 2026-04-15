@@ -3,8 +3,8 @@ Generate and optionally visualize trajectory data for grid cell training.
 
 Usage
 -----
-# Generate 100 000 trajectories with default config, save to data/train.npz
-python generate_data.py --output data/train.npz
+# Generate trajectories with default config, save to training.data_path
+python generate_data.py
 
 # Visualize without saving
 python generate_data.py --output data/train.npz --visualize
@@ -61,7 +61,10 @@ def parse_args() -> argparse.Namespace:
         help="Path to YAML config (default: config.yaml)",
     )
     parser.add_argument(
-        "--output", required=True, help="Output .npz file path, e.g. data/train.npz"
+        "--output",
+        default=None,
+        help="Output .npz file path. Defaults to training.data_path from config, "
+        "e.g. data/train.npz",
     )
     parser.add_argument(
         "--num_samples",
@@ -730,6 +733,11 @@ def main() -> None:
 
     # Load config
     cfg = load_config(args.config)
+    output_path = args.output or getattr(cfg.training, "data_path", None)
+    if output_path is None:
+        raise ValueError(
+            "No output path provided. Set --output or configure training.data_path."
+        )
 
     # Resolve generation parameters (CLI overrides config)
     num_samples = args.num_samples or (
@@ -743,27 +751,27 @@ def main() -> None:
     if args.visualize:
         vis_path = args.vis_output
         if vis_path is None:
-            base = args.output
+            base = output_path
             vis_path = (base[:-4] if base.endswith(".npz") else base) + "_vis.pdf"
 
     anim_path = None
     if args.animate:
         anim_path = args.anim_output
         if anim_path is None:
-            base = args.output
+            base = output_path
             anim_path = (base[:-4] if base.endswith(".npz") else base) + "_traj.mp4"
 
     progress_path = None
     if args.visualize_progress:
         progress_path = args.progress_output
         if progress_path is None:
-            base = args.output
+            base = output_path
             progress_path = (
                 base[:-4] if base.endswith(".npz") else base
             ) + "_progress.png"
 
     generate_dataset_file(
-        output_path=args.output,
+        output_path=output_path,
         num_samples=num_samples,
         seq_len=seq_len,
         env_size=env_size,

@@ -46,7 +46,7 @@ python generate_data.py --output data/train.npz --eval_output data/eval.npz --vi
 # 第二步：用保存的数据训练（train/eval 都复用固定数据集）
 python train.py
 
-# 第三步：启动 TensorBoard 查看 loss / grid score
+# 第三步：启动 TensorBoard 查看 loss / pos_mse / grid score
 tensorboard --logdir results
 ```
 
@@ -54,6 +54,8 @@ tensorboard --logdir results
 1. `train.log`：精简后的训练日志（仅保留启动、epoch 汇总、eval 汇总）
 2. `tensorboard/`：TensorBoard event 文件
 3. `rates_and_sac_epoch_XXXX.pdf`：评估可视化 PDF（按多页分页，但全量保留所有 units）
+
+训练和评估现在都会额外输出 `pos_mse`：把模型预测的 place-cell logits 解码回二维位置，再和真实 `target_pos` 比较均方误差，便于直观看训练是否真的学会了路径积分。
 
 默认训练路径会优先加载 `training.data_path`（默认 `data/train.npz`），并启用当前实现里的几项性能优化：
 1. `model.py` 使用 `nn.LSTM(batch_first=True)`，不再手写 `LSTMCell` 时间循环。
@@ -130,10 +132,10 @@ train(cfg)
 
 ```bash
 # 默认：生成 steps_per_epoch × batch_size = 10000 条轨迹
-python generate_data.py --output data/train.npz
+python generate_data.py
 
 # 生成更多数据 + 同时输出可视化 PDF
-python generate_data.py --output data/train.npz --num_samples 100000 --visualize
+python generate_data.py --num_samples 100000 --visualize
 
 # 多进程生成 + 周期性输出过程预览图 + 最终 PDF
 python generate_data.py --output data/train.npz --num_workers 8 --visualize_progress --visualize
@@ -155,7 +157,7 @@ python generate_data.py \
     --visualize
 ```
 
-推荐约定是把训练集保存为 `data/train.npz`，评估集保存为 `data/eval.npz`。默认配置会优先把 `data/eval.npz` 当作固定 eval split 使用。
+推荐约定是把训练集保存为 `data/train.npz`，评估集保存为 `data/eval.npz`。默认情况下，`generate_data.py` 会把主输出写到 `training.data_path`（默认 `data/train.npz`），训练也会优先复用这一路径；固定 eval split 仍默认使用 `data/eval.npz`。
 
 生成完成后 `data/train.npz` 包含所有轨迹，`data/train_vis.pdf` 是可视化报告（见下节）。如果启用 `--visualize_progress`，生成过程中还会周期性刷新 `data/train_progress.png`，方便在无 GUI 的环境里观察当前覆盖范围、速度分布和生成进度。如果启用 `--animate`，还会额外导出 `data/train_traj.mp4`，展示示例轨迹如何随时间展开。
 
@@ -354,7 +356,7 @@ training:
   use_tensorboard: true  # 是否写入 TensorBoard 标量。
 
   tensorboard_log_every: 0  # step 标量写入间隔。
-                            # 0 表示自动计算：每个 epoch 最多记录 10 次 step loss。
+                            # 0 表示自动计算：每个 epoch 最多记录 10 次 step loss/pos_mse。
 
   eval_num_workers: 4    # 评估阶段用于 grid score 计算的进程数。
                          # 0/1 表示串行；>1 会按 unit chunk 并行计算 score。
@@ -381,9 +383,9 @@ results/
 
 日志与可观测性的行为如下：
 1. `train.log` 只记录关键摘要，不再把每个 step 都写进文件
-2. 控制台通过 `tqdm` 实时显示当前 `loss` 和 epoch 内平均 `avg`
-3. TensorBoard 记录 `train/loss_step`、`train/loss_mean`、`train/loss_std`、`train/epoch_seconds`、`eval/grid_score_60_max`、`eval/grid_score_90_max`
-4. `train/loss_step` 的默认采样频率会自动计算，保证每个 epoch 平均最多写入 10 个 step 标量点
+2. 控制台通过 `tqdm` 实时显示当前 `loss`、当前 step 的 `pos_mse` 和 epoch 内平均 `avg`
+3. TensorBoard 记录 `train/loss_step`、`train/pos_mse_step`、`train/loss_mean`、`train/loss_std`、`train/pos_mse_mean`、`train/epoch_seconds`、`eval/pos_mse`、`eval/grid_score_60_max`、`eval/grid_score_90_max`
+4. `train/loss_step` / `train/pos_mse_step` 的默认采样频率会自动计算，保证每个 epoch 平均最多写入 10 个 step 标量点
 5. 评估 PDF 改为多页输出，避免把全部 unit 挤进单张超大 figure，但不会丢掉任何一个 unit
 6. 评估时不再缓存完整 `(N, T, n_units)` bottleneck 张量，而是流式累计 rate map，再并行计算 score
 
@@ -440,13 +442,20 @@ tensorboard --logdir results
 4. 按 unit chunk 并行计算 score（由 `eval_num_workers` 和 `eval_chunk_size` 控制），并在每个 chunk 内对旋转 SAC / mask 相关做批量向量化
 5. 将所有 rate map 和 SAC 按 `grid_score_60` 降序排列，分页保存为 PDF
 
+其中 `pos_mse` 的计算方式是：
+
+1. 对每个 place-cell head 的 logits 做 softmax
+2. 用 place cell centers 对概率分布做加权平均，得到预测位置
+3. 若有多个 place-cell ensemble，则对各自解码出的位置取平均
+4. 与真实 `target_pos` 做均方误差
+
 输出示例：
 ```
-2026-04-15 15:30:00  INFO  epoch=   2  loss mean=4.8246  std=0.0071  seconds=18.4
-2026-04-15 15:30:08  INFO  eval epoch=2  grid_score_60 max=0.35  grid_score_90 max=0.84  seconds=42.7
+2026-04-15 15:30:00  INFO  epoch=   2  loss mean=4.8246  std=0.0071  pos_mse=0.038412  seconds=18.4
+2026-04-15 15:30:08  INFO  eval epoch=2  pos_mse=0.031955  grid_score_60 max=0.35  grid_score_90 max=0.84  seconds=42.7
 ```
 
-训练过程中，step 级 loss 会显示在 `tqdm` 进度条里，而不是持续刷到日志文件中。
+训练过程中，step 级 loss 和 `pos_mse` 会显示在 `tqdm` 进度条里，而不是持续刷到日志文件中。
 
 `grid_score_60 > 0.3` 表明对应神经元已涌现出类似六边形网格的响应模式。
 
@@ -476,7 +485,7 @@ print(f"Grid score 90°: {score_90:.4f}")
 
 | 参数 | 默认值 | 含义 |
 |------|--------|------|
-| `--output` | 必填 | 保存路径，如 `data/train.npz` |
+| `--output` | `training.data_path` | 保存路径，默认 `data/train.npz` |
 | `--config` | `config.yaml` | 读取默认参数的配置文件 |
 | `--num_samples` | `steps_per_epoch × batch_size` | 生成的轨迹总数 |
 | `--seq_len` | config 中的值 | 每条轨迹的时间步数 |

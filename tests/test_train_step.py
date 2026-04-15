@@ -14,6 +14,7 @@ from dataset import get_dataloader
 from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from model import GridCellsRNN
 from train import (
+    _evaluate,
     _build_eval_loader,
     _build_train_loader,
     build_optimizer,
@@ -275,3 +276,82 @@ def test_build_train_loader_falls_back_when_data_path_missing(monkeypatch):
     )
 
     assert loader is None
+
+
+def test_evaluate_reports_position_mse(monkeypatch, tmp_path):
+    """Evaluation should log decoded position MSE alongside grid scores."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_units_per_page = 8
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    pc_ens[0].means = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    class DummyModel:
+        def __init__(self):
+            self.training = True
+
+        def eval(self):
+            self.training = False
+
+        def train(self):
+            self.training = True
+
+        def __call__(self, init_cond, ego_vel, training=False):
+            batch, seq_len = ego_vel.shape[:2]
+            pc_logits = [torch.tensor([[[15.0, -15.0]]] * batch, dtype=ego_vel.dtype).repeat(1, seq_len, 1)]
+            hdc_logits = [torch.zeros(batch, seq_len, 4, dtype=ego_vel.dtype)]
+            bottleneck = torch.zeros(batch, seq_len, cfg.model.nh_bottleneck, dtype=ego_vel.dtype)
+            lstm_acts = torch.zeros(batch, seq_len, cfg.model.nh_lstm, dtype=ego_vel.dtype)
+            return pc_logits, hdc_logits, bottleneck, lstm_acts
+
+    class DummyScorer:
+        def allocate_ratemap_accumulators(self, n_units):
+            return np.zeros((n_units, 2, 2), dtype=np.float32), np.zeros((2, 2), dtype=np.float32)
+
+        def accumulate_ratemaps(self, positions, activations, ratemap_sums, ratemap_counts):
+            ratemap_sums += 1.0
+            ratemap_counts += 1.0
+
+        def finalize_ratemaps(self, ratemap_sums, ratemap_counts):
+            return ratemap_sums
+
+    class DummyWriter:
+        def __init__(self):
+            self.scalars = {}
+
+        def add_scalar(self, tag, value, step):
+            self.scalars[tag] = (value, step)
+
+    monkeypatch.setattr(
+        train_module,
+        "get_scores_and_plot_from_ratemaps",
+        lambda *args, **kwargs: (np.array([0.5]), np.array([0.25])),
+    )
+
+    batch = {
+        "init_pos": torch.zeros(1, 2),
+        "init_hd": torch.zeros(1, 1),
+        "ego_vel": torch.zeros(1, 3, 3),
+        "target_pos": torch.zeros(1, 3, 2),
+        "target_hd": torch.zeros(1, 3, 1),
+    }
+    writer = DummyWriter()
+
+    _evaluate(
+        DummyModel(),
+        pc_ens,
+        hdc_ens,
+        DummyScorer(),
+        [batch],
+        cfg,
+        torch.device("cpu"),
+        epoch=2,
+        writer=writer,
+    )
+
+    assert "eval/pos_mse" in writer.scalars
+    assert writer.scalars["eval/pos_mse"][1] == 2
+    assert writer.scalars["eval/pos_mse"][0] < 1e-6

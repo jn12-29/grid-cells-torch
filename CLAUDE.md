@@ -3,6 +3,7 @@
 - Recommended dataset layout: `data/train.npz` for training and `data/eval.npz` for the fixed evaluation split.
 - `training.data_path` defaults to `data/train.npz`. If the file is missing, `train.py` falls back to on-the-fly trajectory generation each epoch.
 - `training.eval_data_path` defaults to `data/eval.npz`. If the file is missing, `train.py` generates one fixed in-memory eval set at startup and reuses it for the whole run.
-- `generate_data.py` can now emit both splits in one invocation via `--output ... --eval_output ...`.
+- `train.py` now logs decoded position MSE for both training and evaluation by mapping place-cell logits back to 2-D coordinates.
+- `generate_data.py` defaults its main output path to `training.data_path` (usually `data/train.npz`) and can still emit both splits in one invocation via `--output ... --eval_output ...`.
 - `generate_data.py` supports chunked multiprocessing via `--num_workers`, and can write a continuously refreshed headless-safe preview PNG via `--visualize_progress`.
 - `generate_data.py` can also export an MP4 trajectory animation via `--animate` / `--anim_output` (requires `ffmpeg`).

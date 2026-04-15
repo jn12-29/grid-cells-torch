@@ -73,13 +73,69 @@ def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
     assert calls == [(6, str(anim_path), 12, 16)]
 
 
+def test_main_defaults_output_to_config_training_data_path(tmp_path, monkeypatch):
+    """CLI should default the main output path to training.data_path from config."""
+    train_path = tmp_path / "train.npz"
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(
+            seq_len=6,
+            env_size=2.2,
+            neurons_seed=5,
+            velocity_noise=[0.0, 0.0, 0.0],
+        ),
+        training=SimpleNamespace(
+            steps_per_epoch=2,
+            batch_size=3,
+            eval_batch_size=4,
+            data_path=str(train_path),
+        ),
+    )
+
+    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
+    monkeypatch.setattr(
+        generate_data,
+        "parse_args",
+        lambda: SimpleNamespace(
+            config="config.yaml",
+            output=None,
+            num_samples=None,
+            seq_len=None,
+            env_size=None,
+            seed=None,
+            visualize=False,
+            animate=False,
+            vis_output=None,
+            anim_output=None,
+            anim_fps=20,
+            num_workers=1,
+            visualize_progress=False,
+            progress_output=None,
+            eval_progress_output=None,
+            progress_every=4,
+            eval_output=None,
+            eval_num_samples=None,
+            eval_seed=None,
+        ),
+    )
+
+    generate_data.main()
+
+    train_meta = np.load(train_path, allow_pickle=False)["meta"].item()
+    assert '"num_samples": 6' in train_meta
+
+
 def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
     """CLI entry point should support writing train and eval files in one run."""
     train_path = tmp_path / "train.npz"
     eval_path = tmp_path / "eval.npz"
     cfg = SimpleNamespace(
         task=SimpleNamespace(seq_len=6, env_size=2.2, neurons_seed=5, velocity_noise=[0.0, 0.0, 0.0]),
-        training=SimpleNamespace(steps_per_epoch=2, batch_size=3, eval_batch_size=4),
+        training=SimpleNamespace(
+            steps_per_epoch=2,
+            batch_size=3,
+            eval_batch_size=4,
+            data_path=str(train_path),
+        ),
     )
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)

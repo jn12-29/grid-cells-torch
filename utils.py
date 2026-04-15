@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 
@@ -142,6 +143,37 @@ def encode_targets(
     hdc_targets = [ens.get_targets(target_hd_np) for ens in hdc_ensembles]
 
     return pc_targets, hdc_targets
+
+
+def decode_position_from_pc_logits(
+    pc_logits: List[torch.Tensor],
+    pc_ensembles: List[PlaceCellEnsemble],
+) -> torch.Tensor:
+    """Decode positions from place-cell logits via a weighted mean of cell centres."""
+    if not pc_logits or not pc_ensembles:
+        raise ValueError("At least one place-cell ensemble is required to decode positions.")
+
+    decoded_positions = []
+    for logits, ensemble in zip(pc_logits, pc_ensembles):
+        probs = F.softmax(logits, dim=-1)
+        means = torch.as_tensor(
+            ensemble.means,
+            dtype=logits.dtype,
+            device=logits.device,
+        )
+        decoded_positions.append(torch.matmul(probs, means))
+
+    return torch.stack(decoded_positions, dim=0).mean(dim=0)
+
+
+def compute_position_mse(
+    pc_logits: List[torch.Tensor],
+    target_pos: torch.Tensor,
+    pc_ensembles: List[PlaceCellEnsemble],
+) -> torch.Tensor:
+    """Compute mean-squared error between decoded and ground-truth positions."""
+    pred_pos = decode_position_from_pc_logits(pc_logits, pc_ensembles)
+    return F.mse_loss(pred_pos, target_pos)
 
 
 # ---------------------------------------------------------------------------
