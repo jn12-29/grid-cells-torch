@@ -294,7 +294,14 @@ class TrajectoryDataset(Dataset):
 # DataLoader factory
 # ---------------------------------------------------------------------------
 
-def get_dataloader(cfg, data_path: str = None, pc_ens=None, hdc_ens=None) -> DataLoader:
+def get_dataloader(
+    cfg,
+    data_path: str = None,
+    pc_ens=None,
+    hdc_ens=None,
+    num_samples: int = None,
+    shuffle: bool = True,
+) -> DataLoader:
     """Build a DataLoader from a config object or a saved .npz file.
 
     When data_path is given, trajectories are loaded from disk (fast, no
@@ -310,6 +317,8 @@ def get_dataloader(cfg, data_path: str = None, pc_ens=None, hdc_ens=None) -> Dat
                    TrajectoryDataset.save() or generate_data.py.
         pc_ens:    optional list of place-cell ensembles.
         hdc_ens:   optional list of head-direction-cell ensembles.
+        num_samples: optional sample count override for generated datasets.
+        shuffle:   whether to shuffle the dataset each epoch.
 
     Returns:
         DataLoader with pin_memory=True and persistent workers enabled.
@@ -317,7 +326,9 @@ def get_dataloader(cfg, data_path: str = None, pc_ens=None, hdc_ens=None) -> Dat
     if data_path is not None:
         dataset = TrajectoryDataset.from_file(data_path)
     else:
-        num_samples = cfg.training.steps_per_epoch * cfg.training.batch_size
+        num_samples = num_samples or (
+            cfg.training.steps_per_epoch * cfg.training.batch_size
+        )
         dataset = TrajectoryDataset(
             num_samples=num_samples,
             seq_len=cfg.task.seq_len,
@@ -333,7 +344,7 @@ def get_dataloader(cfg, data_path: str = None, pc_ens=None, hdc_ens=None) -> Dat
     return DataLoader(
         dataset,
         batch_size=cfg.training.batch_size,
-        shuffle=True,
+        shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=(num_workers > 0),

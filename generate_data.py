@@ -12,6 +12,9 @@ python generate_data.py --output data/train.npz --visualize
 # Generate a smaller evaluation set
 python generate_data.py --output data/eval.npz --num_samples 4000
 
+# Generate train/eval splits in one run
+python generate_data.py --output data/train.npz --eval_output data/eval.npz
+
 # Use a custom config
 python generate_data.py --config my_config.yaml --output data/train.npz
 """
@@ -68,6 +71,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--visualize", action="store_true",
         help="Generate and save a visualisation PDF alongside the .npz file"
+    )
+    parser.add_argument(
+        "--eval_output", default=None,
+        help="Optional second .npz file path for a fixed evaluation split, "
+             "e.g. data/eval.npz"
+    )
+    parser.add_argument(
+        "--eval_num_samples", type=int, default=None,
+        help="Number of trajectories for the optional eval split. "
+             "Defaults to training.eval_batch_size from config."
+    )
+    parser.add_argument(
+        "--eval_seed", type=int, default=None,
+        help="Random seed for the optional eval split. Defaults to seed + 1."
     )
     parser.add_argument(
         "--vis_output", default=None,
@@ -234,6 +251,35 @@ def visualize(dataset: TrajectoryDataset, save_path: str) -> None:
     print(f"Visualisation saved to {save_path}")
 
 
+def generate_dataset_file(
+    output_path: str,
+    num_samples: int,
+    seq_len: int,
+    env_size: float,
+    velocity_noise,
+    seed: int,
+    visualize_output: str = None,
+) -> TrajectoryDataset:
+    """Generate one dataset file and optionally emit its visualization PDF."""
+    print(
+        f"Generating {num_samples} trajectories for {output_path} "
+        f"(seq_len={seq_len}, env_size={env_size} m, seed={seed}) ..."
+    )
+    dataset = TrajectoryDataset(
+        num_samples=num_samples,
+        seq_len=seq_len,
+        env_size=env_size,
+        velocity_noise=velocity_noise,
+        seed=seed,
+    )
+    dataset.save(output_path)
+
+    if visualize_output is not None:
+        visualize(dataset, visualize_output)
+
+    return dataset
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -252,29 +298,34 @@ def main() -> None:
     env_size = args.env_size or cfg.task.env_size
     seed     = args.seed     if args.seed is not None else cfg.task.neurons_seed
 
-    print(
-        f"Generating {num_samples} trajectories  "
-        f"(seq_len={seq_len}, env_size={env_size} m, seed={seed}) ..."
-    )
-
-    dataset = TrajectoryDataset(
-        num_samples=num_samples,
-        seq_len=seq_len,
-        env_size=env_size,
-        velocity_noise=cfg.task.velocity_noise,
-        seed=seed,
-    )
-
-    # Save
-    dataset.save(args.output)
-
-    # Optionally visualize
+    vis_path = None
     if args.visualize:
         vis_path = args.vis_output
         if vis_path is None:
             base = args.output
             vis_path = (base[:-4] if base.endswith(".npz") else base) + "_vis.pdf"
-        visualize(dataset, vis_path)
+
+    generate_dataset_file(
+        output_path=args.output,
+        num_samples=num_samples,
+        seq_len=seq_len,
+        env_size=env_size,
+        velocity_noise=cfg.task.velocity_noise,
+        seed=seed,
+        visualize_output=vis_path,
+    )
+
+    if args.eval_output is not None:
+        eval_num_samples = args.eval_num_samples or cfg.training.eval_batch_size
+        eval_seed = args.eval_seed if args.eval_seed is not None else seed + 1
+        generate_dataset_file(
+            output_path=args.eval_output,
+            num_samples=eval_num_samples,
+            seq_len=seq_len,
+            env_size=env_size,
+            velocity_noise=cfg.task.velocity_noise,
+            seed=eval_seed,
+        )
 
 
 if __name__ == "__main__":

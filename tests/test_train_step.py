@@ -13,7 +13,7 @@ import train as train_module
 from dataset import get_dataloader
 from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from model import GridCellsRNN
-from train import build_optimizer, get_step_log_interval, resolve_save_dir
+from train import _build_eval_loader, build_optimizer, get_step_log_interval, resolve_save_dir
 
 
 def make_cfg():
@@ -176,3 +176,45 @@ def test_create_summary_writer_uses_tensorboard_subdir(monkeypatch):
     assert isinstance(writer, DummyWriter)
     assert os.path.normpath(calls["log_dir"]) == os.path.normpath("./results/run1/tensorboard")
     assert calls["tag"] == "run/config"
+
+
+def test_build_eval_loader_prefers_configured_eval_data_path(tmp_path, monkeypatch):
+    """Eval loading should reuse the configured eval split when the file exists."""
+    cfg = make_cfg()
+    cfg.training.eval_batch_size = 7
+    cfg.training.eval_data_path = str(tmp_path / "eval.npz")
+    cfg.training.batch_size = 4
+    calls = {}
+
+    cfg_path = tmp_path / "eval.npz"
+    cfg_path.write_bytes(b"placeholder")
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "eval-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_eval_loader(cfg, logging.getLogger("test_eval"))
+
+    assert loader == "eval-loader"
+    assert calls["kwargs"] == {"data_path": str(cfg_path), "shuffle": False}
+
+
+def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
+    """Missing eval files should fall back to one fixed generated eval dataset."""
+    cfg = make_cfg()
+    cfg.training.eval_batch_size = 7
+    cfg.training.eval_data_path = "data/missing-eval.npz"
+    calls = {}
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "generated-eval-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_eval_loader(cfg, logging.getLogger("test_eval_missing"))
+
+    assert loader == "generated-eval-loader"
+    assert calls["kwargs"] == {"num_samples": 7, "shuffle": False}

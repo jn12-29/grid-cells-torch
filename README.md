@@ -41,9 +41,9 @@ grid-cells-torch/
 cd grid-cells-torch
 
 # 第一步：生成并保存轨迹数据（只需运行一次）
-python generate_data.py --output data/train.npz --visualize
+python generate_data.py --output data/train.npz --eval_output data/eval.npz --visualize
 
-# 第二步：用保存的数据训练（每 epoch 直接从文件加载，无需重复生成）
+# 第二步：用保存的数据训练（train/eval 都复用固定数据集）
 python train.py --data_path data/train.npz
 
 # 第三步：启动 TensorBoard 查看 loss / grid score
@@ -59,6 +59,7 @@ tensorboard --logdir results
 1. `model.py` 使用 `nn.LSTM(batch_first=True)`，不再手写 `LSTMCell` 时间循环。
 2. `dataset.py` 会预计算 `init_cond`，并在 DataLoader worker 中按样本编码 `pc_targets_i` / `hdc_targets_i`。
 3. DataLoader 启用 `persistent_workers=True`，避免每个 epoch 重建 worker。
+4. 评估默认优先复用 `training.eval_data_path`（默认 `data/eval.npz`）；若该文件不存在，则只在训练开始时生成一份固定 eval 集并在整个 run 内复用。
 
 ### 不保存数据（原始模式）
 
@@ -131,6 +132,9 @@ python generate_data.py --output data/train.npz
 # 生成更多数据 + 同时输出可视化 PDF
 python generate_data.py --output data/train.npz --num_samples 100000 --visualize
 
+# 一次生成 train/eval 两个 split（推荐）
+python generate_data.py --output data/train.npz --eval_output data/eval.npz
+
 # 生成单独的评估集
 python generate_data.py --output data/eval.npz --num_samples 4000 --seed 9999
 
@@ -141,6 +145,8 @@ python generate_data.py \
     --num_samples 50000 \
     --visualize
 ```
+
+推荐约定是把训练集保存为 `data/train.npz`，评估集保存为 `data/eval.npz`。默认配置会优先把 `data/eval.npz` 当作固定 eval split 使用。
 
 生成完成后 `data/train.npz` 包含所有轨迹，`data/train_vis.pdf` 是可视化报告（见下节）。
 
@@ -278,10 +284,14 @@ training:
                          # 每步处理一个 batch，共 1000 × 10 = 10000 条轨迹/epoch。
 
   batch_size: 10         # 每个梯度更新步使用的轨迹数。
-                          # 原论文 10，较小 batch 与 RMSprop 配合更稳定。
+                           # 原论文 10，较小 batch 与 RMSprop 配合更稳定。
 
   eval_batch_size: 4000  # 评估时使用的轨迹总数（4000 条）。
-                          # 用于计算 rate map 和网格评分，数量越多越准确。
+                           # 用于计算 rate map 和网格评分，数量越多越准确。
+
+  eval_data_path: "data/eval.npz"  # 固定评估集路径。
+                                   # 若文件存在，整个训练期间复用这份 eval split。
+                                   # 若不存在，则启动时在内存中生成一份固定 eval 集。
 
   optimizer: "rmsprop"  # 训练优化器，可选 "rmsprop" 或 "adamw"。
 
@@ -444,6 +454,9 @@ print(f"Grid score 90°: {score_90:.4f}")
 | `--env_size` | config 中的值 | 方形环境边长（米） |
 | `--seed` | config 中的 `neurons_seed` | 随机种子 |
 | `--visualize` | 关闭 | 是否生成可视化 PDF |
+| `--eval_output` | 关闭 | 可选的第二个输出文件，用来同时生成固定评估集 |
+| `--eval_num_samples` | `training.eval_batch_size` | 可选 eval split 的样本数 |
+| `--eval_seed` | `seed + 1` | 可选 eval split 的随机种子 |
 | `--vis_output` | `<output>_vis.pdf` | 可视化 PDF 的保存路径 |
 
 训练时使用保存的数据：
@@ -452,7 +465,13 @@ print(f"Grid score 90°: {score_90:.4f}")
 python train.py --data_path data/train.npz
 ```
 
-数据只在 `DataLoader` 初始化时加载一次，每个 epoch 通过 shuffle 重新打乱，**不会重复读取文件**。
+如果想临时覆盖默认评估集路径，可以额外指定：
+
+```bash
+python train.py --data_path data/train.npz --eval_data_path data/other_eval.npz
+```
+
+训练数据只在 `DataLoader` 初始化时加载一次，每个 epoch 通过 shuffle 重新打乱，**不会重复读取文件**。评估数据默认也只会初始化一次，并在整个 run 内复用。
 
 ---
 

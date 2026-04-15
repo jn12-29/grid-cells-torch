@@ -22,6 +22,7 @@ training:
   steps_per_epoch: 1000
   batch_size: 10
   eval_batch_size: 4000
+  eval_data_path: "data/eval.npz"
   optimizer: "adamw"
   lr: 1.0e-3
   momentum: 0.9
@@ -29,7 +30,7 @@ training:
   adamw_eps: 1.0e-8
   weight_decay: 1.0e-5
   grad_clip: 1.0e-5
-  eval_every: 2
+  eval_every: 10
   save_dir: "./results"
   run_name: null
   timestamp_save_dir: true

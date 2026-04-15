@@ -218,6 +218,13 @@ def parse_args() -> argparse.Namespace:
         "If omitted, trajectories are generated on-the-fly "
         "every epoch.",
     )
+    parser.add_argument(
+        "--eval_data_path",
+        default=None,
+        help="Path to a fixed .npz evaluation dataset. "
+        "Defaults to training.eval_data_path from config; when that file is "
+        "missing, train.py falls back to generating one fixed eval set in memory.",
+    )
 
     # task overrides
     parser.add_argument("--task.env_size", type=float, dest="task__env_size")
@@ -286,7 +293,7 @@ def parse_args() -> argparse.Namespace:
 def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNamespace:
     """Apply non-None CLI overrides to the config namespace in-place."""
     for key, value in vars(args).items():
-        if key in ("config", "data_path") or value is None:
+        if key in ("config", "data_path", "eval_data_path") or value is None:
             continue
         section, attr = key.split("__", 1)
         setattr(getattr(cfg, section), attr, value)
@@ -298,22 +305,18 @@ def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNa
 # ---------------------------------------------------------------------------
 
 
-def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=None):
+def _evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, writer=None):
     """Collect bottleneck activations, compute grid scores, and save a PDF."""
     model_was_training = model.training
     model.eval()
 
-    eval_loader = get_dataloader(cfg)
-    n_eval_batches = cfg.training.eval_batch_size // cfg.training.batch_size
     ratemap_sums, ratemap_counts = scorer.allocate_ratemap_accumulators(
         cfg.model.nh_bottleneck
     )
     eval_start = time.time()
 
     with torch.no_grad():
-        for i, batch in enumerate(eval_loader):
-            if i >= n_eval_batches:
-                break
+        for batch in eval_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
             _, _, bottleneck, _ = model(init_cond, batch["ego_vel"], training=False)
@@ -356,12 +359,45 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=None):
         model.train()
 
 
+def _build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None):
+    """Build one fixed evaluation loader, preferring a configured dataset file."""
+    resolved_eval_data_path = eval_data_path
+    if resolved_eval_data_path is None:
+        resolved_eval_data_path = getattr(cfg.training, "eval_data_path", None)
+
+    if resolved_eval_data_path and os.path.exists(resolved_eval_data_path):
+        logger.info("Loading eval trajectories from %s", resolved_eval_data_path)
+        return get_dataloader(
+            cfg,
+            data_path=resolved_eval_data_path,
+            shuffle=False,
+        )
+
+    if resolved_eval_data_path:
+        logger.warning(
+            "Eval dataset %s not found; generating one fixed in-memory eval set with %d trajectories",
+            resolved_eval_data_path,
+            cfg.training.eval_batch_size,
+        )
+    else:
+        logger.info(
+            "Generating one fixed in-memory eval set with %d trajectories",
+            cfg.training.eval_batch_size,
+        )
+
+    return get_dataloader(
+        cfg,
+        num_samples=cfg.training.eval_batch_size,
+        shuffle=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
 
 
-def train(cfg, data_path: str = None):
+def train(cfg, data_path: str = None, eval_data_path: str = None):
     """Run the full training loop described in Banino et al., Nature 2018."""
     cfg.training.save_dir = resolve_save_dir(
         cfg.training.save_dir,
@@ -423,6 +459,12 @@ def train(cfg, data_path: str = None):
         )
     else:
         _fixed_loader = None
+
+    _fixed_eval_loader = _build_eval_loader(
+        cfg,
+        logger,
+        eval_data_path=eval_data_path,
+    )
 
     global_step = 0
 
@@ -531,7 +573,15 @@ def train(cfg, data_path: str = None):
 
             if epoch % cfg.training.eval_every == 0:
                 _evaluate(
-                    model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=writer
+                    model,
+                    pc_ens,
+                    hdc_ens,
+                    scorer,
+                    _fixed_eval_loader,
+                    cfg,
+                    device,
+                    epoch,
+                    writer=writer,
                 )
     finally:
         if writer is not None:
@@ -546,4 +596,4 @@ if __name__ == "__main__":
     args = parse_args()
     cfg = load_config(args.config)
     _apply_overrides(cfg, args)
-    train(cfg, data_path=args.data_path)
+    train(cfg, data_path=args.data_path, eval_data_path=args.eval_data_path)

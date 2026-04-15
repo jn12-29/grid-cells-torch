@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 import pytest
+from torch.utils.data import RandomSampler, SequentialSampler
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -92,3 +93,22 @@ def test_get_dataloader_attaches_ensembles_and_keeps_workers():
     assert "init_cond" in batch
     assert "pc_targets_0" in batch
     assert "hdc_targets_0" in batch
+
+
+def test_get_dataloader_can_build_fixed_size_eval_loader():
+    """Eval loaders should support explicit sample counts and sequential order."""
+    cfg = make_cfg()
+
+    loader = get_dataloader(cfg, num_samples=5, shuffle=False)
+
+    assert len(loader.dataset) == 5
+    assert isinstance(loader.batch_sampler.sampler, SequentialSampler)
+
+
+def test_get_dataloader_defaults_to_shuffled_training_loader():
+    """Training loaders should keep random shuffling by default."""
+    cfg = make_cfg()
+
+    loader = get_dataloader(cfg)
+
+    assert isinstance(loader.batch_sampler.sampler, RandomSampler)
