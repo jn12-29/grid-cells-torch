@@ -44,7 +44,7 @@ cd grid-cells-torch
 python generate_data.py --output data/train.npz --eval_output data/eval.npz --visualize
 
 # 第二步：用保存的数据训练（train/eval 都复用固定数据集）
-python train.py --data_path data/train.npz
+python train.py
 
 # 第三步：启动 TensorBoard 查看 loss / grid score
 tensorboard --logdir results
@@ -55,16 +55,19 @@ tensorboard --logdir results
 2. `tensorboard/`：TensorBoard event 文件
 3. `rates_and_sac_epoch_XXXX.pdf`：评估可视化 PDF（按多页分页，但全量保留所有 units）
 
-使用 `--data_path` 时，训练路径会启用当前实现里的几项性能优化：
+默认训练路径会优先加载 `training.data_path`（默认 `data/train.npz`），并启用当前实现里的几项性能优化：
 1. `model.py` 使用 `nn.LSTM(batch_first=True)`，不再手写 `LSTMCell` 时间循环。
 2. `dataset.py` 会预计算 `init_cond`，并在 DataLoader worker 中按样本编码 `pc_targets_i` / `hdc_targets_i`。
 3. DataLoader 启用 `persistent_workers=True`，避免每个 epoch 重建 worker。
 4. 评估默认优先复用 `training.eval_data_path`（默认 `data/eval.npz`）；若该文件不存在，则只在训练开始时生成一份固定 eval 集并在整个 run 内复用。
 
+如果 `data/train.npz` 不存在，训练会自动回退到原来的“每个 epoch 在线生成轨迹”模式。
+
 ### 不保存数据（原始模式）
 
 ```bash
-python train.py   # 每 epoch 实时生成新轨迹，适合快速实验
+# 将 config.yaml 里的 training.data_path 设为 null 后再运行
+python train.py
 ```
 
 ### 命令行覆盖参数
@@ -306,10 +309,14 @@ training:
                          # 每步处理一个 batch，共 1000 × 10 = 10000 条轨迹/epoch。
 
   batch_size: 10         # 每个梯度更新步使用的轨迹数。
-                           # 原论文 10，较小 batch 与 RMSprop 配合更稳定。
+                            # 原论文 10，较小 batch 与 RMSprop 配合更稳定。
+
+  data_path: "data/train.npz"  # 固定训练集路径。
+                                # 若文件存在，整个训练期间复用这份 train split。
+                                # 若不存在，则回退到每个 epoch 在线生成轨迹。
 
   eval_batch_size: 4000  # 评估时使用的轨迹总数（4000 条）。
-                           # 用于计算 rate map 和网格评分，数量越多越准确。
+                            # 用于计算 rate map 和网格评分，数量越多越准确。
 
   eval_data_path: "data/eval.npz"  # 固定评估集路径。
                                    # 若文件存在，整个训练期间复用这份 eval split。
@@ -492,16 +499,16 @@ print(f"Grid score 90°: {score_90:.4f}")
 训练时使用保存的数据：
 
 ```bash
-python train.py --data_path data/train.npz
+python train.py
 ```
 
 如果想临时覆盖默认评估集路径，可以额外指定：
 
 ```bash
-python train.py --data_path data/train.npz --eval_data_path data/other_eval.npz
+python train.py --eval_data_path data/other_eval.npz
 ```
 
-训练数据只在 `DataLoader` 初始化时加载一次，每个 epoch 通过 shuffle 重新打乱，**不会重复读取文件**。评估数据默认也只会初始化一次，并在整个 run 内复用。
+训练数据默认从 `training.data_path` 只在 `DataLoader` 初始化时加载一次，每个 epoch 通过 shuffle 重新打乱，**不会重复读取文件**。评估数据默认也只会初始化一次，并在整个 run 内复用。
 
 ---
 

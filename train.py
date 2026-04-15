@@ -215,7 +215,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to a pre-generated .npz trajectory file "
         "(created by generate_data.py). "
-        "If omitted, trajectories are generated on-the-fly "
+        "Defaults to training.data_path from config; when that file is "
+        "missing, train.py falls back to generating trajectories on-the-fly "
         "every epoch.",
     )
     parser.add_argument(
@@ -392,6 +393,36 @@ def _build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None):
     )
 
 
+def _build_train_loader(
+    cfg,
+    logger: logging.Logger,
+    pc_ens,
+    hdc_ens,
+    data_path: str = None,
+):
+    """Build one fixed training loader, preferring a configured dataset file."""
+    resolved_data_path = data_path
+    if resolved_data_path is None:
+        resolved_data_path = getattr(cfg.training, "data_path", None)
+
+    if resolved_data_path and os.path.exists(resolved_data_path):
+        logger.info("Loading trajectories from %s", resolved_data_path)
+        return get_dataloader(
+            cfg,
+            data_path=resolved_data_path,
+            pc_ens=pc_ens,
+            hdc_ens=hdc_ens,
+        )
+
+    if resolved_data_path:
+        logger.warning(
+            "Training trajectory file %s not found; falling back to on-the-fly generation.",
+            resolved_data_path,
+        )
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
@@ -449,16 +480,13 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
     os.makedirs(cfg.training.save_dir, exist_ok=True)
 
     # 6. Training loop
-    if data_path is not None:
-        logger.info("Loading trajectories from %s", data_path)
-        _fixed_loader = get_dataloader(
-            cfg,
-            data_path=data_path,
-            pc_ens=pc_ens,
-            hdc_ens=hdc_ens,
-        )
-    else:
-        _fixed_loader = None
+    _fixed_loader = _build_train_loader(
+        cfg,
+        logger,
+        pc_ens,
+        hdc_ens,
+        data_path=data_path,
+    )
 
     _fixed_eval_loader = _build_eval_loader(
         cfg,

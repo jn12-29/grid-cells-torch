@@ -21,6 +21,7 @@ training:
   epochs: 1000
   steps_per_epoch: 1000
   batch_size: 10
+  data_path: "data/train.npz"
   eval_batch_size: 4000
   eval_data_path: "data/eval.npz"
   optimizer: "adamw"

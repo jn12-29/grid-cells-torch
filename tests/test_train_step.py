@@ -13,7 +13,13 @@ import train as train_module
 from dataset import get_dataloader
 from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from model import GridCellsRNN
-from train import _build_eval_loader, build_optimizer, get_step_log_interval, resolve_save_dir
+from train import (
+    _build_eval_loader,
+    _build_train_loader,
+    build_optimizer,
+    get_step_log_interval,
+    resolve_save_dir,
+)
 
 
 def make_cfg():
@@ -40,6 +46,7 @@ def make_cfg():
         training=SimpleNamespace(
             batch_size=4,
             steps_per_epoch=2,
+            data_path="data/train.npz",
             optimizer="rmsprop",
             lr=1e-4,
             momentum=0.9,
@@ -218,3 +225,53 @@ def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
 
     assert loader == "generated-eval-loader"
     assert calls["kwargs"] == {"num_samples": 7, "shuffle": False}
+
+
+def test_build_train_loader_prefers_configured_data_path(tmp_path, monkeypatch):
+    """Training should reuse the configured train split when the file exists."""
+    cfg = make_cfg()
+    cfg.training.data_path = str(tmp_path / "train.npz")
+    calls = {}
+
+    cfg_path = tmp_path / "train.npz"
+    cfg_path.write_bytes(b"placeholder")
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "train-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_train_loader(
+        cfg,
+        logging.getLogger("test_train_loader"),
+        pc_ens="pc",
+        hdc_ens="hdc",
+    )
+
+    assert loader == "train-loader"
+    assert calls["kwargs"] == {
+        "data_path": str(cfg_path),
+        "pc_ens": "pc",
+        "hdc_ens": "hdc",
+    }
+
+
+def test_build_train_loader_falls_back_when_data_path_missing(monkeypatch):
+    """Missing train files should keep the original on-the-fly training mode."""
+    cfg = make_cfg()
+    cfg.training.data_path = "data/missing-train.npz"
+
+    def fail_get_dataloader(*args, **kwargs):
+        raise AssertionError("train loader should not be built from a missing file")
+
+    monkeypatch.setattr(train_module, "get_dataloader", fail_get_dataloader)
+
+    loader = _build_train_loader(
+        cfg,
+        logging.getLogger("test_train_loader_missing"),
+        pc_ens="pc",
+        hdc_ens="hdc",
+    )
+
+    assert loader is None

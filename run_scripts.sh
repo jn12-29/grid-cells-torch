@@ -1,1 +1,1 @@
-CUDA_VISIBLE_DEVICES=3 python train.py --data_path "data/train.npz"
+CUDA_VISIBLE_DEVICES=3 python train.py
