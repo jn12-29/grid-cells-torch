@@ -99,9 +99,14 @@ grid-cells-torch/
 ├── generate_data.py
 ├── train.py
 ├── model.py
+├── animation.py
 ├── dataset.py
+├── encoding.py
 ├── ensembles.py
+├── evaluation.py
 ├── scores.py
+├── training_session.py
+├── trajectory_generation.py
 ├── utils.py
 └── results/
 ```
@@ -111,6 +116,7 @@ grid-cells-torch/
 
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - `generate_data.py` can export `.npz`, PDF summaries, and the same 3-panel MP4 animation style used by eval outputs.
+- OOP-oriented orchestration now lives in dedicated modules: `encoding.py` centralizes ensemble encoding, `animation.py` owns trajectory rendering, `evaluation.py` owns eval/export flow, `training_session.py` owns the train loop, and `trajectory_generation.py` owns random-walk synthesis.
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
 - `run_scripts.sh` prints a compact list of common train, generate, and TensorBoard commands.
 - The current default config is tuned for the expanded engineering workflow, not a line-by-line lockstep copy of the original hyperparameters.

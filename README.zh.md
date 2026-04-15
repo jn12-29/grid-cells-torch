@@ -99,9 +99,14 @@ grid-cells-torch/
 ├── generate_data.py
 ├── train.py
 ├── model.py
+├── animation.py
 ├── dataset.py
+├── encoding.py
 ├── ensembles.py
+├── evaluation.py
 ├── scores.py
+├── training_session.py
+├── trajectory_generation.py
 ├── utils.py
 └── results/
 ```
@@ -111,6 +116,7 @@ grid-cells-torch/
 
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
 - `generate_data.py` 可以在同一工作流中导出 `.npz`、PDF 汇总，以及和 eval 输出同风格的 3-panel MP4 动画。
+- 面向对象的流程编排现在拆到了独立模块里：`encoding.py` 统一 ensemble 编码，`animation.py` 管理轨迹动画渲染，`evaluation.py` 管理评估与导出流程，`training_session.py` 管理训练主循环，`trajectory_generation.py` 管理随机游走轨迹生成。
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
 - `run_scripts.sh` 会打印一份精简的常用训练、数据生成和 TensorBoard 命令清单。
 - 当前默认配置更偏向扩展后的工程化实验流程，而不是对原始超参数做逐行逐值锁定。
