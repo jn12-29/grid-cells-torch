@@ -18,10 +18,10 @@ python generate_data.py --output data/train_small.npz --num_samples 4000 --train
 Train
 
 4. Train with the default workflow
-CUDA_VISIBLE_DEVICES=4 python train.py
+CUDA_VISIBLE_DEVICES=0 python train.py
 
 5. Train with config overrides
-CUDA_VISIBLE_DEVICES=0 python train.py --training.epochs 20 --training.batch_size 64 --run-name debug
+CUDA_VISIBLE_DEVICES=0 python train.py --training.epochs 20 --training.eval_every 1
 
 Monitor
 
