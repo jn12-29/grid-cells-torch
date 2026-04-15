@@ -2,7 +2,7 @@
 
 [🌐 English](README.md)
 
-本仓库最初是对 `google-deepmind/grid-cells` 的忠实 PyTorch 迁移，之后扩展成了更实用的数据生成、评估、可视化、日志与分析工作流。
+本仓库最初是对 [`google-deepmind/grid-cells`](https://github.com/google-deepmind/grid-cells) 的忠实 PyTorch 迁移，之后扩展成了更实用的数据生成、评估、可视化、日志与分析工作流。
 
 ## ✨ 结果
 

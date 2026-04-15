@@ -2,7 +2,7 @@
 
 [🌐 中文](README.zh.md)
 
-A faithful PyTorch port of `google-deepmind/grid-cells`, later expanded into a more practical workflow for data generation, evaluation, visualization, logging, and analysis.
+A faithful PyTorch port of [`google-deepmind/grid-cells`](https://github.com/google-deepmind/grid-cells), later expanded into a more practical workflow for data generation, evaluation, visualization, logging, and analysis.
 
 ## ✨ Results
 
