@@ -1,0 +1,30 @@
+task:
+  env_size: 2.2 # environment size in meters
+  n_pc: [256] # list of place cell counts
+  pc_scale: [0.01] # place cell standard deviation (meters)
+  n_hdc: [12] # head direction cell count
+  hdc_concentration: [20.0] # Von Mises concentration parameter
+  seq_len: 1000 # trajectory sequence length
+  neurons_seed: 8341 # random seed (matches original)
+  targets_type: "softmax"
+  lstm_init_type: "softmax"
+  velocity_noise: [0.0, 0.0, 0.0]
+
+model:
+  nh_lstm: 128
+  nh_bottleneck: 256
+  dropout_rate: 0.5
+  bottleneck_has_bias: false
+  init_weight_disp: 0.0
+
+training:
+  epochs: 1000
+  steps_per_epoch: 1000
+  batch_size: 10
+  eval_batch_size: 4000
+  lr: 1.0e-5
+  momentum: 0.9
+  weight_decay: 1.0e-5
+  grad_clip: 1.0e-5
+  eval_every: 2
+  save_dir: "./results"
