@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -157,9 +158,10 @@ def test_visualize_animation_renders_frames_and_encodes_mp4(tmp_path, monkeypatc
     assert encode_calls[0][1:] == (str(anim_path), 12, 6)
 
 
-def test_main_defaults_output_to_config_training_data_path(tmp_path, monkeypatch):
-    """CLI should default the main output path to training.data_path from config."""
+def test_main_defaults_output_to_config_train_and_eval_paths(tmp_path, monkeypatch):
+    """CLI should default to config train/eval output paths."""
     train_path = tmp_path / "train.npz"
+    eval_path = tmp_path / "eval.npz"
     cfg = SimpleNamespace(
         task=SimpleNamespace(
             seq_len=6,
@@ -172,6 +174,7 @@ def test_main_defaults_output_to_config_training_data_path(tmp_path, monkeypatch
             batch_size=3,
             eval_batch_size=4,
             data_path=str(train_path),
+            eval_data_path=str(eval_path),
         ),
     )
 
@@ -199,6 +202,7 @@ def test_main_defaults_output_to_config_training_data_path(tmp_path, monkeypatch
             eval_progress_output=None,
             progress_every=4,
             eval_output=None,
+            train_only=False,
             eval_num_samples=None,
             eval_seed=None,
         ),
@@ -207,7 +211,65 @@ def test_main_defaults_output_to_config_training_data_path(tmp_path, monkeypatch
     generate_data.main()
 
     train_meta = np.load(train_path, allow_pickle=False)["meta"].item()
+    eval_meta = np.load(eval_path, allow_pickle=False)["meta"].item()
     assert '"num_samples": 6' in train_meta
+    assert '"num_samples": 4' in eval_meta
+
+
+def test_main_train_only_skips_default_eval_output(tmp_path, monkeypatch):
+    """CLI should allow generating only the main split."""
+    train_path = tmp_path / "train.npz"
+    eval_path = tmp_path / "eval.npz"
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(
+            seq_len=6,
+            env_size=2.2,
+            neurons_seed=5,
+            velocity_noise=[0.0, 0.0, 0.0],
+        ),
+        training=SimpleNamespace(
+            steps_per_epoch=2,
+            batch_size=3,
+            eval_batch_size=4,
+            data_path=str(train_path),
+            eval_data_path=str(eval_path),
+        ),
+    )
+
+    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
+    monkeypatch.setattr(
+        generate_data,
+        "parse_args",
+        lambda: SimpleNamespace(
+            config="config.yaml",
+            output=None,
+            num_samples=None,
+            seq_len=None,
+            env_size=None,
+            seed=None,
+            visualize=False,
+            animate=False,
+            vis_output=None,
+            anim_output=None,
+            anim_fps=20,
+            anim_workers=8,
+            anim_chunk_size=32,
+            num_workers=1,
+            visualize_progress=False,
+            progress_output=None,
+            eval_progress_output=None,
+            progress_every=4,
+            eval_output=None,
+            train_only=True,
+            eval_num_samples=None,
+            eval_seed=None,
+        ),
+    )
+
+    generate_data.main()
+
+    assert train_path.exists()
+    assert not eval_path.exists()
 
 
 def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
@@ -221,6 +283,7 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
             batch_size=3,
             eval_batch_size=4,
             data_path=str(train_path),
+            eval_data_path=str(tmp_path / "config-eval.npz"),
         ),
     )
 
@@ -248,6 +311,7 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
             eval_progress_output=None,
             progress_every=4,
             eval_output=str(eval_path),
+            train_only=False,
             eval_num_samples=None,
             eval_seed=None,
         ),
@@ -259,3 +323,110 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
     eval_meta = np.load(eval_path, allow_pickle=False)["meta"].item()
     assert '"num_samples": 6' in train_meta
     assert '"num_samples": 4' in eval_meta
+
+
+def test_main_rejects_same_train_and_eval_output_paths(tmp_path, monkeypatch):
+    """Train and eval outputs should not resolve to the same path."""
+    shared_path = tmp_path / "shared.npz"
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(
+            seq_len=6,
+            env_size=2.2,
+            neurons_seed=5,
+            velocity_noise=[0.0, 0.0, 0.0],
+        ),
+        training=SimpleNamespace(
+            steps_per_epoch=2,
+            batch_size=3,
+            eval_batch_size=4,
+            data_path=str(shared_path),
+            eval_data_path=str(shared_path),
+        ),
+    )
+
+    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
+    monkeypatch.setattr(
+        generate_data,
+        "parse_args",
+        lambda: SimpleNamespace(
+            config="config.yaml",
+            output=None,
+            num_samples=None,
+            seq_len=None,
+            env_size=None,
+            seed=None,
+            visualize=False,
+            animate=False,
+            vis_output=None,
+            anim_output=None,
+            anim_fps=20,
+            anim_workers=8,
+            anim_chunk_size=32,
+            num_workers=1,
+            visualize_progress=False,
+            progress_output=None,
+            eval_progress_output=None,
+            progress_every=4,
+            eval_output=None,
+            train_only=False,
+            eval_num_samples=None,
+            eval_seed=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Train and eval output paths must be different"):
+        generate_data.main()
+
+
+def test_main_rejects_train_only_with_eval_output(tmp_path, monkeypatch):
+    """Conflicting train-only/eval flags should be rejected."""
+    train_path = tmp_path / "train.npz"
+    eval_path = tmp_path / "eval.npz"
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(
+            seq_len=6,
+            env_size=2.2,
+            neurons_seed=5,
+            velocity_noise=[0.0, 0.0, 0.0],
+        ),
+        training=SimpleNamespace(
+            steps_per_epoch=2,
+            batch_size=3,
+            eval_batch_size=4,
+            data_path=str(train_path),
+            eval_data_path=str(eval_path),
+        ),
+    )
+
+    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
+    monkeypatch.setattr(
+        generate_data,
+        "parse_args",
+        lambda: SimpleNamespace(
+            config="config.yaml",
+            output=None,
+            num_samples=None,
+            seq_len=None,
+            env_size=None,
+            seed=None,
+            visualize=False,
+            animate=False,
+            vis_output=None,
+            anim_output=None,
+            anim_fps=20,
+            anim_workers=8,
+            anim_chunk_size=32,
+            num_workers=1,
+            visualize_progress=False,
+            progress_output=None,
+            eval_progress_output=None,
+            progress_every=4,
+            eval_output=str(eval_path),
+            train_only=True,
+            eval_num_samples=None,
+            eval_seed=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Cannot combine --train_only with --eval_output"):
+        generate_data.main()

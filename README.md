@@ -40,8 +40,8 @@ grid-cells-torch/
 ```bash
 cd grid-cells-torch
 
-# 第一步：生成并保存轨迹数据（只需运行一次）
-python generate_data.py --output data/train.npz --eval_output data/eval.npz --visualize
+# 第一步：生成并保存轨迹数据（默认同时生成 train/eval，只需运行一次）
+python generate_data.py --visualize
 
 # 第二步：用保存的数据训练（train/eval 都复用固定数据集）
 python train.py
@@ -131,7 +131,7 @@ train(cfg)
 ### 生成并保存数据（推荐）
 
 ```bash
-# 默认：生成 steps_per_epoch × batch_size = 10000 条轨迹
+# 默认：生成 train/eval 两个 split
 python generate_data.py
 
 # 生成更多数据 + 同时输出可视化 PDF
@@ -146,11 +146,14 @@ python generate_data.py --output data/train.npz --animate
 # 并行渲染 MP4 帧并显示 render/encode 进度条
 python generate_data.py --output data/train.npz --animate --anim_workers 8
 
-# 一次生成 train/eval 两个 split（推荐）
+# 一次生成 train/eval 两个 split（自定义路径）
 python generate_data.py --output data/train.npz --eval_output data/eval.npz
 
+# 只生成训练集
+python generate_data.py --train_only
+
 # 生成单独的评估集
-python generate_data.py --output data/eval.npz --num_samples 4000 --seed 9999
+python generate_data.py --output data/eval.npz --num_samples 4000 --seed 9999 --train_only
 
 # 指定自定义参数
 python generate_data.py \
@@ -160,9 +163,9 @@ python generate_data.py \
     --visualize
 ```
 
-推荐约定是把训练集保存为 `data/train.npz`，评估集保存为 `data/eval.npz`。默认情况下，`generate_data.py` 会把主输出写到 `training.data_path`（默认 `data/train.npz`），训练也会优先复用这一路径；固定 eval split 仍默认使用 `data/eval.npz`。
+推荐约定是把训练集保存为 `data/train.npz`，评估集保存为 `data/eval.npz`。默认情况下，`generate_data.py` 会把主输出写到 `training.data_path`（默认 `data/train.npz`），并同时把 eval split 写到 `training.eval_data_path`（默认 `data/eval.npz`）。如果只想生成主输出，可以显式传 `--train_only`。
 
-生成完成后 `data/train.npz` 包含所有轨迹，`data/train_vis.pdf` 是可视化报告（见下节）。如果启用 `--visualize_progress`，生成过程中还会周期性刷新 `data/train_progress.png`，方便在无 GUI 的环境里观察当前覆盖范围、速度分布和生成进度。如果启用 `--animate`，还会额外导出 `data/train_traj.mp4`，展示示例轨迹如何随时间展开。MP4 导出现在会先并行渲染 PNG 帧，再调用 `ffmpeg` 合成，并分别显示 `render:*` 与 `encode:*` 进度条。
+默认生成完成后会写出 `data/train.npz` 和 `data/eval.npz` 两个文件，其中 `data/train.npz` 包含训练轨迹；若启用 `--visualize`，`data/train_vis.pdf` 是主输出对应的可视化报告（见下节）。如果启用 `--visualize_progress`，生成过程中还会周期性刷新 `data/train_progress.png`，方便在无 GUI 的环境里观察当前覆盖范围、速度分布和生成进度。如果启用 `--animate`，还会额外导出 `data/train_traj.mp4`，展示示例轨迹如何随时间展开。MP4 导出现在会先并行渲染 PNG 帧，再调用 `ffmpeg` 合成，并分别显示 `render:*` 与 `encode:*` 进度条。
 
 ### 手动生成并查看轨迹
 
@@ -505,11 +508,12 @@ print(f"Grid score 90°: {score_90:.4f}")
 | `--num_workers` | `8` | 轨迹分块生成时使用的进程数 |
 | `--visualize_progress` | 关闭 | 是否在生成期间周期性写出过程预览 PNG |
 | `--progress_output` | `<output>_progress.png` | 主输出文件对应的过程预览图路径 |
-| `--eval_progress_output` | `<eval_output>_progress.png` | eval split 的过程预览图路径 |
+| `--eval_progress_output` | `<resolved eval output>_progress.png` | eval split 的过程预览图路径 |
 | `--progress_every` | `4` | 每完成多少个 chunk 刷新一次过程预览图 |
-| `--eval_output` | 关闭 | 可选的第二个输出文件，用来同时生成固定评估集 |
-| `--eval_num_samples` | `training.eval_batch_size` | 可选 eval split 的样本数 |
-| `--eval_seed` | `seed + 1` | 可选 eval split 的随机种子 |
+| `--eval_output` | `training.eval_data_path` | eval split 保存路径，默认 `data/eval.npz` |
+| `--train_only` | 关闭 | 只生成主输出，不生成默认 eval split |
+| `--eval_num_samples` | `training.eval_batch_size` | eval split 的样本数 |
+| `--eval_seed` | `seed + 1` | eval split 的随机种子 |
 | `--vis_output` | `<output>_vis.pdf` | 可视化 PDF 的保存路径 |
 
 训练时使用保存的数据：

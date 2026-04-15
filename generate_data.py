@@ -3,14 +3,14 @@ Generate and optionally visualize trajectory data for grid cell training.
 
 Usage
 -----
-# Generate trajectories with default config, save to training.data_path
+# Generate default train/eval splits from config
 python generate_data.py
 
 # Visualize without saving
 python generate_data.py --output data/train.npz --visualize
 
-# Generate a smaller evaluation set
-python generate_data.py --output data/eval.npz --num_samples 4000
+# Generate a smaller evaluation set only
+python generate_data.py --output data/eval.npz --num_samples 4000 --train_only
 
 # Export an MP4 animation of sample trajectories
 python generate_data.py --output data/train.npz --animate
@@ -107,14 +107,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--eval_output",
         default=None,
-        help="Optional second .npz file path for a fixed evaluation split, "
-        "e.g. data/eval.npz",
+        help="Eval split .npz file path. Defaults to training.eval_data_path from "
+        "config, e.g. data/eval.npz",
+    )
+    parser.add_argument(
+        "--train_only",
+        action="store_true",
+        help="Generate only the main output file and skip eval split generation",
     )
     parser.add_argument(
         "--eval_num_samples",
         type=int,
         default=None,
-        help="Number of trajectories for the optional eval split. "
+        help="Number of trajectories for the eval split. "
         "Defaults to training.eval_batch_size from config.",
     )
     parser.add_argument(
@@ -172,7 +177,7 @@ def parse_args() -> argparse.Namespace:
         "--eval_progress_output",
         default=None,
         help="Path for the eval split progress preview PNG. "
-        "Defaults to <eval_output>_progress.png",
+        "Defaults to <resolved eval output>_progress.png",
     )
     parser.add_argument(
         "--progress_every",
@@ -886,6 +891,21 @@ def main() -> None:
         raise ValueError(
             "No output path provided. Set --output or configure training.data_path."
         )
+    if args.train_only and args.eval_output is not None:
+        raise ValueError("Cannot combine --train_only with --eval_output.")
+
+    eval_output_path = None
+    if not args.train_only:
+        eval_output_path = args.eval_output or getattr(
+            cfg.training, "eval_data_path", None
+        )
+    if eval_output_path is not None and os.path.abspath(eval_output_path) == os.path.abspath(
+        output_path
+    ):
+        raise ValueError(
+            "Train and eval output paths must be different. Use --train_only to "
+            "generate a single split."
+        )
 
     # Resolve generation parameters (CLI overrides config)
     num_samples = args.num_samples or (
@@ -935,19 +955,19 @@ def main() -> None:
         progress_every=args.progress_every,
     )
 
-    if args.eval_output is not None:
+    if eval_output_path is not None:
         eval_num_samples = args.eval_num_samples or cfg.training.eval_batch_size
         eval_seed = args.eval_seed if args.eval_seed is not None else seed + 1
         eval_progress_path = None
         if args.visualize_progress:
             eval_progress_path = args.eval_progress_output
             if eval_progress_path is None:
-                base = args.eval_output
+                base = eval_output_path
                 eval_progress_path = (
                     base[:-4] if base.endswith(".npz") else base
                 ) + "_progress.png"
         generate_dataset_file(
-            output_path=args.eval_output,
+            output_path=eval_output_path,
             num_samples=eval_num_samples,
             seq_len=seq_len,
             env_size=env_size,
