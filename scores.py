@@ -18,6 +18,7 @@
 #   - Replaced deprecated scipy.ndimage.interpolation.rotate with scipy.ndimage.rotate
 
 import math
+
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.ndimage
@@ -45,10 +46,16 @@ class GridScorer(object):
         self._min_max = min_max
         self._coords_range = coords_range
         self._corr_angles = [30, 45, 60, 90, 120, 135, 150]
+        self._angle_to_index = {
+            angle: index for index, angle in enumerate(self._corr_angles)
+        }
         self._masks = [
             (self._get_ring_mask(mask_min, mask_max), (mask_min, mask_max))
             for mask_min, mask_max in mask_parameters
         ]
+        self._mask_stack = np.asarray([mask for mask, _ in self._masks], dtype=np.float64)
+        self._mask_params = [params for _, params in self._masks]
+        self._mask_ring_areas = np.sum(self._mask_stack, axis=(1, 2))
         self._plotting_sac_mask = circle_mask(
             [self._nbins * 2 - 1, self._nbins * 2 - 1],
             self._nbins,
@@ -65,6 +72,63 @@ class GridScorer(object):
             statistic=statistic,
             range=self._coords_range,
         )[0]
+
+    def allocate_ratemap_accumulators(self, n_units, dtype=np.float64):
+        """Allocate accumulators for streaming rate-map construction."""
+        counts = np.zeros((self._nbins, self._nbins), dtype=np.int64)
+        sums = np.zeros((n_units, self._nbins, self._nbins), dtype=dtype)
+        return sums, counts
+
+    def _digitize_positions(self, xs, ys):
+        """Map coordinates to bin indices matching binned_statistic_2d semantics."""
+        x_edges = np.linspace(
+            self._coords_range[0][0], self._coords_range[0][1], self._nbins + 1
+        )
+        y_edges = np.linspace(
+            self._coords_range[1][0], self._coords_range[1][1], self._nbins + 1
+        )
+
+        x_idx = np.searchsorted(x_edges, xs, side="right") - 1
+        y_idx = np.searchsorted(y_edges, ys, side="right") - 1
+
+        x_idx[xs == x_edges[-1]] = self._nbins - 1
+        y_idx[ys == y_edges[-1]] = self._nbins - 1
+
+        valid = (
+            (x_idx >= 0)
+            & (x_idx < self._nbins)
+            & (y_idx >= 0)
+            & (y_idx < self._nbins)
+        )
+        return x_idx[valid], y_idx[valid], valid
+
+    def accumulate_ratemaps(self, positions, activations, sums, counts):
+        """Accumulate streaming contributions to per-unit rate maps."""
+        flat_pos = positions.reshape(-1, positions.shape[-1])
+        flat_act = activations.reshape(-1, activations.shape[-1])
+
+        x_idx, y_idx, valid = self._digitize_positions(flat_pos[:, 0], flat_pos[:, 1])
+        if not np.any(valid):
+            return
+
+        flat_bins = x_idx * self._nbins + y_idx
+        np.add.at(counts.reshape(-1), flat_bins, 1)
+
+        valid_act = np.asarray(flat_act[valid], dtype=sums.dtype)
+        unit_indices = np.arange(valid_act.shape[1])[:, None]
+        np.add.at(sums.reshape(valid_act.shape[1], -1), (unit_indices, flat_bins[None, :]), valid_act.T)
+
+    def finalize_ratemaps(self, sums, counts):
+        """Convert accumulated sums/counts into mean rate maps with NaNs for empty bins."""
+        ratemaps = np.full(sums.shape, np.nan, dtype=sums.dtype)
+        valid = counts > 0
+        np.divide(
+            sums,
+            counts[None, :, :],
+            out=ratemaps,
+            where=valid[None, :, :],
+        )
+        return ratemaps
 
     def _get_ring_mask(self, mask_min, mask_max):
         n_points = [self._nbins * 2 - 1, self._nbins * 2 - 1]
@@ -107,20 +171,16 @@ class GridScorer(object):
         sum_seq2_sq = filter2(ones_seq1, seq2_sq)
         n_bins = filter2(ones_seq1, ones_seq2)
         n_bins_sq = np.square(n_bins)
-        std_seq1 = np.power(
-            np.subtract(
-                np.divide(sum_seq1_sq, n_bins),
-                (np.divide(np.square(sum_seq1), n_bins_sq)),
-            ),
-            0.5,
+        var_seq1 = np.subtract(
+            np.divide(sum_seq1_sq, n_bins),
+            np.divide(np.square(sum_seq1), n_bins_sq),
         )
-        std_seq2 = np.power(
-            np.subtract(
-                np.divide(sum_seq2_sq, n_bins),
-                (np.divide(np.square(sum_seq2), n_bins_sq)),
-            ),
-            0.5,
+        var_seq2 = np.subtract(
+            np.divide(sum_seq2_sq, n_bins),
+            np.divide(np.square(sum_seq2), n_bins_sq),
         )
+        std_seq1 = np.sqrt(np.maximum(var_seq1, 0.0))
+        std_seq2 = np.sqrt(np.maximum(var_seq2, 0.0))
         covar = np.subtract(
             np.divide(seq1_x_seq2, n_bins),
             np.divide(np.multiply(sum_seq1, sum_seq2), n_bins_sq),
@@ -132,6 +192,16 @@ class GridScorer(object):
 
     def rotated_sacs(self, sac, angles):
         return [scipy.ndimage.rotate(sac, angle, reshape=False) for angle in angles]
+
+    def rotated_sacs_batch(self, sacs, angles):
+        """Rotate a batch of SACs for all requested angles."""
+        return np.stack(
+            [
+                scipy.ndimage.rotate(sacs, angle, axes=(1, 2), reshape=False)
+                for angle in angles
+            ],
+            axis=1,
+        )
 
     def get_grid_scores_for_mask(self, sac, rotated_sacs, mask):
         masked_sac = sac * mask
@@ -162,6 +232,62 @@ class GridScorer(object):
             self._masks[max_60_ind][1],
             self._masks[max_90_ind][1],
             sac,
+        )
+
+    def get_scores_batch(self, ratemaps):
+        """Score a chunk of rate maps with batched rotation and mask correlation."""
+        ratemaps = np.asarray(ratemaps)
+        if ratemaps.ndim == 2:
+            ratemaps = ratemaps[np.newaxis, ...]
+
+        sacs = np.asarray([self.calculate_sac(ratemap) for ratemap in ratemaps])
+        rotated_sacs = self.rotated_sacs_batch(sacs, self._corr_angles)
+
+        mask_stack = self._mask_stack[None, :, None, :, :]
+        ring_areas = self._mask_ring_areas[None, :, None]
+
+        masked_sacs = sacs[:, None, :, :] * self._mask_stack[None, :, :, :]
+        masked_sac_means = np.sum(masked_sacs, axis=(-1, -2)) / self._mask_ring_areas[None, :]
+        masked_sac_centered = (
+            masked_sacs - masked_sac_means[:, :, None, None]
+        )[:, :, None, :, :] * mask_stack
+        variance = np.sum(masked_sac_centered ** 2, axis=(-1, -2)) / ring_areas + 1e-5
+
+        masked_rotated_sacs = (
+            rotated_sacs[:, None, :, :, :] - masked_sac_means[:, :, None, None, None]
+        ) * mask_stack
+        cross_prod = np.sum(
+            masked_sac_centered * masked_rotated_sacs,
+            axis=(-1, -2),
+        ) / ring_areas
+        corrs = cross_prod / variance
+
+        corr_30 = corrs[:, :, self._angle_to_index[30]]
+        corr_45 = corrs[:, :, self._angle_to_index[45]]
+        corr_60 = corrs[:, :, self._angle_to_index[60]]
+        corr_90 = corrs[:, :, self._angle_to_index[90]]
+        corr_120 = corrs[:, :, self._angle_to_index[120]]
+        corr_135 = corrs[:, :, self._angle_to_index[135]]
+        corr_150 = corrs[:, :, self._angle_to_index[150]]
+
+        if self._min_max:
+            scores_60 = np.minimum(corr_60, corr_120) - np.maximum(
+                corr_30, np.maximum(corr_90, corr_150)
+            )
+        else:
+            scores_60 = (corr_60 + corr_120) / 2 - (corr_30 + corr_90 + corr_150) / 3
+        scores_90 = corr_90 - (corr_45 + corr_135) / 2
+
+        max_60_ind = np.argmax(scores_60, axis=1)
+        max_90_ind = np.argmax(scores_90, axis=1)
+        unit_indices = np.arange(ratemaps.shape[0])
+
+        return (
+            scores_60[unit_indices, max_60_ind],
+            scores_90[unit_indices, max_90_ind],
+            [self._mask_params[index] for index in max_60_ind],
+            [self._mask_params[index] for index in max_90_ind],
+            sacs,
         )
 
     def plot_ratemap(self, ratemap, ax=None, title=None, *args, **kwargs):

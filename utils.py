@@ -6,13 +6,14 @@ PyTorch port of the original TensorFlow utility functions from:
   in artificial agents", Nature 2018.
 """
 
+from concurrent.futures import ProcessPoolExecutor
 import os
 from typing import List, Tuple
 
-import numpy as np
-import torch
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+import numpy as np
+import torch
 
 from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 
@@ -147,6 +148,106 @@ def encode_targets(
 # Scoring and plotting
 # ---------------------------------------------------------------------------
 
+def _score_ratemap_chunk(args):
+    """Worker helper for scoring a chunk of rate maps."""
+    scorer, ratemap_chunk = args
+    score_60, score_90, max_60_mask, max_90_mask, sacs = scorer.get_scores_batch(
+        ratemap_chunk
+    )
+
+    return {
+        "score_60": np.asarray(score_60),
+        "score_90": np.asarray(score_90),
+        "max_60_mask": max_60_mask,
+        "max_90_mask": max_90_mask,
+        "sacs": np.asarray(sacs),
+    }
+
+
+def score_ratemaps(scorer, ratemaps, num_workers: int = 0, chunk_size: int = 32):
+    """Score rate maps, optionally in parallel across unit chunks."""
+    n_units = ratemaps.shape[0]
+    chunk_size = max(1, chunk_size)
+    chunks = [
+        (scorer, ratemaps[start:start + chunk_size])
+        for start in range(0, n_units, chunk_size)
+    ]
+
+    if num_workers and num_workers > 1 and len(chunks) > 1:
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            chunk_results = list(executor.map(_score_ratemap_chunk, chunks))
+    else:
+        chunk_results = [_score_ratemap_chunk(chunk) for chunk in chunks]
+
+    score_60 = np.concatenate([result["score_60"] for result in chunk_results], axis=0)
+    score_90 = np.concatenate([result["score_90"] for result in chunk_results], axis=0)
+    max_60_mask = [mask for result in chunk_results for mask in result["max_60_mask"]]
+    max_90_mask = [mask for result in chunk_results for mask in result["max_90_mask"]]
+    sacs = np.concatenate([result["sacs"] for result in chunk_results], axis=0)
+
+    return score_60, score_90, max_60_mask, max_90_mask, sacs
+
+
+def get_scores_and_plot_from_ratemaps(
+    scorer,
+    ratemaps,
+    directory: str,
+    filename: str,
+    cm: str = "jet",
+    sort_by_score_60: bool = True,
+    num_workers: int = 0,
+    chunk_size: int = 32,
+    units_per_page: int = 128,
+):
+    """Compute grid scores from precomputed rate maps and save a paginated PDF."""
+    ratemaps = np.asarray(ratemaps)
+    n_units = ratemaps.shape[0]
+    score_60, score_90, max_60_mask, max_90_mask, sac = score_ratemaps(
+        scorer,
+        ratemaps,
+        num_workers=num_workers,
+        chunk_size=chunk_size,
+    )
+
+    if sort_by_score_60:
+        ordering = np.argsort(-np.array(score_60))
+    else:
+        ordering = np.arange(n_units)
+
+    units_per_page = max(1, units_per_page)
+    cols = min(16, units_per_page)
+
+    os.makedirs(directory, exist_ok=True)
+    with PdfPages(os.path.join(directory, filename)) as pdf:
+        for page_start in range(0, n_units, units_per_page):
+            page_indices = ordering[page_start:page_start + units_per_page]
+            page_count = len(page_indices)
+            rows = int(np.ceil(page_count / cols))
+            fig = plt.figure(figsize=(24, rows * 4))
+
+            for panel_idx, index in enumerate(page_indices):
+                rf = plt.subplot(rows * 2, cols, panel_idx + 1)
+                acr = plt.subplot(rows * 2, cols, rows * cols + panel_idx + 1)
+                title = "%d (%.2f)" % (index, score_60[index])
+                scorer.plot_ratemap(ratemaps[index], ax=rf, title=title, cmap=cm)
+                scorer.plot_sac(
+                    sac[index],
+                    mask_params=max_60_mask[index],
+                    ax=acr,
+                    title=title,
+                    cmap=cm,
+                )
+
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+    return (
+        np.asarray(score_60),
+        np.asarray(score_90),
+        np.asarray([np.mean(m) for m in max_60_mask]),
+        np.asarray([np.mean(m) for m in max_90_mask]),
+    )
+
 def get_scores_and_plot(
     scorer,
     data_abs_xy,
@@ -155,6 +256,9 @@ def get_scores_and_plot(
     filename: str,
     cm: str = "jet",
     sort_by_score_60: bool = True,
+    num_workers: int = 0,
+    chunk_size: int = 32,
+    units_per_page: int = 128,
 ):
     """Compute grid scores and save rate-map / SAC plots to a PDF.
 
@@ -177,50 +281,19 @@ def get_scores_and_plot(
     if isinstance(activations, torch.Tensor):
         activations = activations.detach().cpu().numpy()
 
-    # Flatten the leading (N, T) dimensions
-    xy  = data_abs_xy.reshape(-1, data_abs_xy.shape[-1])   # (N*T, 2)
-    act = activations.reshape(-1, activations.shape[-1])    # (N*T, n_units)
-    n_units = act.shape[1]
+    n_units = activations.shape[-1]
+    sums, counts = scorer.allocate_ratemap_accumulators(n_units)
+    scorer.accumulate_ratemaps(data_abs_xy, activations, sums, counts)
+    ratemaps = scorer.finalize_ratemaps(sums, counts)
 
-    # Compute rate maps
-    ratemaps = [
-        scorer.calculate_ratemap(xy[:, 0], xy[:, 1], act[:, i])
-        for i in range(n_units)
-    ]
-
-    # Compute scores
-    score_60, score_90, max_60_mask, max_90_mask, sac = zip(
-        *[scorer.get_scores(rm) for rm in ratemaps]
-    )
-
-    # Determine panel ordering
-    if sort_by_score_60:
-        ordering = np.argsort(-np.array(score_60))
-    else:
-        ordering = list(range(n_units))
-
-    # Build figure: top row = rate maps, bottom row = SACs
-    cols = 16
-    rows = int(np.ceil(n_units / cols))
-    fig = plt.figure(figsize=(24, rows * 4))
-
-    for i in range(n_units):
-        rf  = plt.subplot(rows * 2, cols, i + 1)
-        acr = plt.subplot(rows * 2, cols, rows * cols + i + 1)
-        index = ordering[i]
-        title = "%d (%.2f)" % (index, score_60[index])
-        scorer.plot_ratemap(ratemaps[index], ax=rf,  title=title, cmap=cm)
-        scorer.plot_sac(sac[index], mask_params=max_60_mask[index], ax=acr, title=title, cmap=cm)
-
-    # Save to PDF
-    os.makedirs(directory, exist_ok=True)
-    with PdfPages(os.path.join(directory, filename)) as pdf:
-        plt.savefig(pdf, format="pdf")
-    plt.close(fig)
-
-    return (
-        np.asarray(score_60),
-        np.asarray(score_90),
-        np.asarray([np.mean(m) for m in max_60_mask]),
-        np.asarray([np.mean(m) for m in max_90_mask]),
+    return get_scores_and_plot_from_ratemaps(
+        scorer,
+        ratemaps,
+        directory,
+        filename,
+        cm=cm,
+        sort_by_score_60=sort_by_score_60,
+        num_workers=num_workers,
+        chunk_size=chunk_size,
+        units_per_page=units_per_page,
     )

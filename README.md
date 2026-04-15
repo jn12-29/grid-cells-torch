@@ -53,13 +53,12 @@ tensorboard --logdir results
 训练默认会把所有输出写到 `results/<timestamp>/`，例如 `results/20260415-153000/`。该目录下会包含：
 1. `train.log`：精简后的训练日志（仅保留启动、epoch 汇总、eval 汇总）
 2. `tensorboard/`：TensorBoard event 文件
-3. `rates_and_sac_epoch_XXXX.pdf`：评估可视化 PDF
+3. `rates_and_sac_epoch_XXXX.pdf`：评估可视化 PDF（按多页分页，但全量保留所有 units）
 
 使用 `--data_path` 时，训练路径会启用当前实现里的几项性能优化：
 1. `model.py` 使用 `nn.LSTM(batch_first=True)`，不再手写 `LSTMCell` 时间循环。
 2. `dataset.py` 会预计算 `init_cond`，并在 DataLoader worker 中按样本编码 `pc_targets_i` / `hdc_targets_i`。
 3. DataLoader 启用 `persistent_workers=True`，避免每个 epoch 重建 worker。
-4. CUDA 训练自动启用 AMP（`torch.autocast` + `GradScaler`）。
 
 ### 不保存数据（原始模式）
 
@@ -311,6 +310,14 @@ training:
 
   tensorboard_log_every: 0  # step 标量写入间隔。
                             # 0 表示自动计算：每个 epoch 最多记录 10 次 step loss。
+
+  eval_num_workers: 4    # 评估阶段用于 grid score 计算的进程数。
+                         # 0/1 表示串行；>1 会按 unit chunk 并行计算 score。
+
+  eval_chunk_size: 32    # 每个评估 worker 处理的 unit 数。
+
+  eval_units_per_page: 128  # PDF 每页容纳的 unit 数。
+                            # 所有 unit 都会保留，只是拆成多页输出。
 ```
 
 ---
@@ -332,6 +339,8 @@ results/
 2. 控制台通过 `tqdm` 实时显示当前 `loss` 和 epoch 内平均 `avg`
 3. TensorBoard 记录 `train/loss_step`、`train/loss_mean`、`train/loss_std`、`train/epoch_seconds`、`eval/grid_score_60_max`、`eval/grid_score_90_max`
 4. `train/loss_step` 的默认采样频率会自动计算，保证每个 epoch 平均最多写入 10 个 step 标量点
+5. 评估 PDF 改为多页输出，避免把全部 unit 挤进单张超大 figure，但不会丢掉任何一个 unit
+6. 评估时不再缓存完整 `(N, T, n_units)` bottleneck 张量，而是流式累计 rate map，再并行计算 score
 
 常用查看命令：
 
@@ -380,16 +389,16 @@ tensorboard --logdir results
 
 每隔 `eval_every` 个 epoch，训练脚本会：
 
-1. 用 4000 条轨迹跑前向传播，收集 bottleneck 激活
-2. 对每个 bottleneck 神经元计算 **rate map**（2D 位置直方图，统计各位置的平均激活）
-3. 对每个 rate map 计算 **空间自相关图（SAC）**
-4. 计算 **grid score**：在 SAC 上衡量 60° 旋转对称性（`grid_score_60`）和 90° 旋转对称性（`grid_score_90`）
-5. 将所有 rate map 和 SAC 按 `grid_score_60` 降序排列，保存为 PDF
+1. 用 4000 条轨迹跑前向传播，但不再缓存完整 bottleneck，而是边前向边累计每个 unit 的 **rate map**
+2. 对每个 rate map 计算 **空间自相关图（SAC）**
+3. 计算 **grid score**：在 SAC 上衡量 60° 旋转对称性（`grid_score_60`）和 90° 旋转对称性（`grid_score_90`）
+4. 按 unit chunk 并行计算 score（由 `eval_num_workers` 和 `eval_chunk_size` 控制），并在每个 chunk 内对旋转 SAC / mask 相关做批量向量化
+5. 将所有 rate map 和 SAC 按 `grid_score_60` 降序排列，分页保存为 PDF
 
 输出示例：
 ```
 2026-04-15 15:30:00  INFO  epoch=   2  loss mean=4.8246  std=0.0071  seconds=18.4
-2026-04-15 15:30:08  INFO  eval epoch=2  grid_score_60 max=0.35  grid_score_90 max=0.84
+2026-04-15 15:30:08  INFO  eval epoch=2  grid_score_60 max=0.35  grid_score_90 max=0.84  seconds=42.7
 ```
 
 训练过程中，step 级 loss 会显示在 `tqdm` 进度条里，而不是持续刷到日志文件中。
@@ -454,7 +463,9 @@ python train.py \
     --training.steps_per_epoch 200 \
     --training.eval_every 10 \
     --training.save_dir ./results_quick \
-    --training.run_name smoke
+    --training.run_name smoke \
+    --training.eval_num_workers 4 \
+    --training.eval_chunk_size 32
 ```
 
 ### 复现论文结果（约数小时，需要 GPU）

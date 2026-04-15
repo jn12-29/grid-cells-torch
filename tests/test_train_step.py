@@ -62,7 +62,6 @@ def test_training_step_with_preencoded_batch():
         momentum=cfg.training.momentum,
         weight_decay=cfg.training.weight_decay,
     )
-    scaler = torch.amp.GradScaler(device=device.type, enabled=False)
 
     loader = get_dataloader(cfg, pc_ens=pc_ens, hdc_ens=hdc_ens)
     batch = next(iter(loader))
@@ -78,22 +77,19 @@ def test_training_step_with_preencoded_batch():
     init_cond = batch["init_cond"].float()
 
     optimizer.zero_grad()
-    with torch.autocast(device_type=device.type, enabled=False):
-        pc_logits, hdc_logits, _, _ = model(init_cond, batch["ego_vel"], training=True)
-        loss = sum(
-            ens.loss(logits, batch[f"pc_targets_{i}"])
-            for i, (ens, logits) in enumerate(zip(pc_ens, pc_logits))
-        )
-        loss += sum(
-            ens.loss(logits, batch[f"hdc_targets_{i}"])
-            for i, (ens, logits) in enumerate(zip(hdc_ens, hdc_logits))
-        )
+    pc_logits, hdc_logits, _, _ = model(init_cond, batch["ego_vel"], training=True)
+    loss = sum(
+        ens.loss(logits, batch[f"pc_targets_{i}"])
+        for i, (ens, logits) in enumerate(zip(pc_ens, pc_logits))
+    )
+    loss += sum(
+        ens.loss(logits, batch[f"hdc_targets_{i}"])
+        for i, (ens, logits) in enumerate(zip(hdc_ens, hdc_logits))
+    )
 
-    scaler.scale(loss).backward()
-    scaler.unscale_(optimizer)
+    loss.backward()
     torch.nn.utils.clip_grad_value_(model.parameters(), cfg.training.grad_clip)
-    scaler.step(optimizer)
-    scaler.update()
+    optimizer.step()
 
     assert np.isfinite(loss.item())
 

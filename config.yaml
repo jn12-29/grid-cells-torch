@@ -33,3 +33,6 @@ training:
   use_tqdm: true
   use_tensorboard: true
   tensorboard_log_every: 0
+  eval_num_workers: 4
+  eval_chunk_size: 32
+  eval_units_per_page: 128

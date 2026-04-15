@@ -37,13 +37,14 @@ from utils import (
     get_head_direction_ensembles,
     encode_initial_conditions,
     encode_targets,
-    get_scores_and_plot,
+    get_scores_and_plot_from_ratemaps,
 )
 
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+
 
 def resolve_save_dir(
     base_dir: str,
@@ -73,8 +74,9 @@ def setup_logger(log_dir: str) -> logging.Logger:
         logger.removeHandler(handler)
         handler.close()
 
-    fmt = logging.Formatter("%(asctime)s  %(levelname)s  %(message)s",
-                            datefmt="%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter(
+        "%(asctime)s  %(levelname)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
     # Console handler
     ch = logging.StreamHandler()
@@ -95,6 +97,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
 
 def _dict_to_namespace(d: dict) -> SimpleNamespace:
     """Recursively convert a dict to a SimpleNamespace."""
@@ -151,7 +154,9 @@ def create_summary_writer(cfg, logger: logging.Logger):
     writer = SummaryWriter(log_dir=log_dir)
     writer.add_text(
         "run/config",
-        "```yaml\n" + yaml.safe_dump(_namespace_to_dict(cfg), sort_keys=False) + "\n```",
+        "```yaml\n"
+        + yaml.safe_dump(_namespace_to_dict(cfg), sort_keys=False)
+        + "\n```",
         0,
     )
     logger.info("TensorBoard logging to %s", log_dir)
@@ -177,21 +182,29 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train grid cells RNN (Banino et al., Nature 2018)"
     )
-    parser.add_argument("--config", default="config.yaml",
-                        help="Path to YAML config file")
-    parser.add_argument("--data_path", default=None,
-                        help="Path to a pre-generated .npz trajectory file "
-                             "(created by generate_data.py). "
-                             "If omitted, trajectories are generated on-the-fly "
-                             "every epoch.")
+    parser.add_argument(
+        "--config", default="config.yaml", help="Path to YAML config file"
+    )
+    parser.add_argument(
+        "--data_path",
+        default=None,
+        help="Path to a pre-generated .npz trajectory file "
+        "(created by generate_data.py). "
+        "If omitted, trajectories are generated on-the-fly "
+        "every epoch.",
+    )
 
     # task overrides
     parser.add_argument("--task.env_size", type=float, dest="task__env_size")
     parser.add_argument("--task.n_pc", type=int, nargs="+", dest="task__n_pc")
     parser.add_argument("--task.pc_scale", type=float, nargs="+", dest="task__pc_scale")
     parser.add_argument("--task.n_hdc", type=int, nargs="+", dest="task__n_hdc")
-    parser.add_argument("--task.hdc_concentration", type=float, nargs="+",
-                        dest="task__hdc_concentration")
+    parser.add_argument(
+        "--task.hdc_concentration",
+        type=float,
+        nargs="+",
+        dest="task__hdc_concentration",
+    )
 
     # model overrides
     parser.add_argument("--model.nh_lstm", type=int, dest="model__nh_lstm")
@@ -200,21 +213,39 @@ def parse_args() -> argparse.Namespace:
 
     # training overrides
     parser.add_argument("--training.epochs", type=int, dest="training__epochs")
-    parser.add_argument("--training.steps_per_epoch", type=int,
-                        dest="training__steps_per_epoch")
+    parser.add_argument(
+        "--training.steps_per_epoch", type=int, dest="training__steps_per_epoch"
+    )
     parser.add_argument("--training.batch_size", type=int, dest="training__batch_size")
     parser.add_argument("--training.lr", type=float, dest="training__lr")
     parser.add_argument("--training.eval_every", type=int, dest="training__eval_every")
     parser.add_argument("--training.save_dir", type=str, dest="training__save_dir")
     parser.add_argument("--training.run_name", type=str, dest="training__run_name")
-    parser.add_argument("--training.tensorboard_log_every", type=int,
-                        dest="training__tensorboard_log_every")
-    parser.add_argument("--training.timestamp_save_dir", type=_str2bool,
-                        dest="training__timestamp_save_dir")
-    parser.add_argument("--training.use_tqdm", type=_str2bool,
-                        dest="training__use_tqdm")
-    parser.add_argument("--training.use_tensorboard", type=_str2bool,
-                        dest="training__use_tensorboard")
+    parser.add_argument(
+        "--training.tensorboard_log_every",
+        type=int,
+        dest="training__tensorboard_log_every",
+    )
+    parser.add_argument(
+        "--training.timestamp_save_dir",
+        type=_str2bool,
+        dest="training__timestamp_save_dir",
+    )
+    parser.add_argument(
+        "--training.use_tqdm", type=_str2bool, dest="training__use_tqdm"
+    )
+    parser.add_argument(
+        "--training.use_tensorboard", type=_str2bool, dest="training__use_tensorboard"
+    )
+    parser.add_argument(
+        "--training.eval_num_workers", type=int, dest="training__eval_num_workers"
+    )
+    parser.add_argument(
+        "--training.eval_chunk_size", type=int, dest="training__eval_chunk_size"
+    )
+    parser.add_argument(
+        "--training.eval_units_per_page", type=int, dest="training__eval_units_per_page"
+    )
 
     return parser.parse_args()
 
@@ -233,16 +264,18 @@ def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNa
 # Evaluation
 # ---------------------------------------------------------------------------
 
+
 def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=None):
     """Collect bottleneck activations, compute grid scores, and save a PDF."""
     model_was_training = model.training
     model.eval()
 
-    all_bottleneck = []
-    all_pos = []
-
     eval_loader = get_dataloader(cfg)
     n_eval_batches = cfg.training.eval_batch_size // cfg.training.batch_size
+    ratemap_sums, ratemap_counts = scorer.allocate_ratemap_accumulators(
+        cfg.model.nh_bottleneck
+    )
+    eval_start = time.time()
 
     with torch.no_grad():
         for i, batch in enumerate(eval_loader):
@@ -251,22 +284,40 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=None):
             batch = {k: v.to(device) for k, v in batch.items()}
             init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
             _, _, bottleneck, _ = model(init_cond, batch["ego_vel"], training=False)
-            all_bottleneck.append(bottleneck.cpu())
-            all_pos.append(batch["target_pos"].cpu())
+            scorer.accumulate_ratemaps(
+                batch["target_pos"].detach().cpu().numpy(),
+                bottleneck.detach().cpu().numpy(),
+                ratemap_sums,
+                ratemap_counts,
+            )
 
-    bottleneck_np = torch.cat(all_bottleneck, dim=0).numpy()  # (N, T, nh_bottleneck)
-    pos_np = torch.cat(all_pos, dim=0).numpy()                # (N, T, 2)
+    ratemaps = scorer.finalize_ratemaps(ratemap_sums, ratemap_counts)
 
     save_dir = cfg.training.save_dir
     filename = f"rates_and_sac_epoch_{epoch:04d}.pdf"
-    scores = get_scores_and_plot(scorer, pos_np, bottleneck_np, save_dir, filename)
+    scores = get_scores_and_plot_from_ratemaps(
+        scorer,
+        ratemaps,
+        save_dir,
+        filename,
+        num_workers=getattr(cfg.training, "eval_num_workers", 0),
+        chunk_size=getattr(cfg.training, "eval_chunk_size", 32),
+        units_per_page=getattr(cfg.training, "eval_units_per_page", 128),
+    )
     logger = logging.getLogger("grid_cells")
-    logger.info("eval epoch=%d  grid_score_60 max=%.4f  grid_score_90 max=%.4f",
-                epoch, scores[0].max(), scores[1].max())
+    eval_seconds = time.time() - eval_start
+    logger.info(
+        "eval epoch=%d  grid_score_60 max=%.4f  grid_score_90 max=%.4f  seconds=%.1f",
+        epoch,
+        scores[0].max(),
+        scores[1].max(),
+        eval_seconds,
+    )
 
     if writer is not None:
         writer.add_scalar("eval/grid_score_60_max", float(scores[0].max()), epoch)
         writer.add_scalar("eval/grid_score_90_max", float(scores[1].max()), epoch)
+        writer.add_scalar("eval/seconds", eval_seconds, epoch)
 
     if model_was_training:
         model.train()
@@ -275,6 +326,7 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=None):
 # ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
+
 
 def train(cfg, data_path: str = None):
     """Run the full training loop described in Banino et al., Nature 2018."""
@@ -290,6 +342,12 @@ def train(cfg, data_path: str = None):
     logger.info("Using device: %s", device)
     logger.info("Run directory: %s", cfg.training.save_dir)
     logger.info("Progress bar enabled: %s", getattr(cfg.training, "use_tqdm", True))
+    logger.info(
+        "Eval workers=%s  chunk_size=%s  units_per_page=%s",
+        getattr(cfg.training, "eval_num_workers", 0),
+        getattr(cfg.training, "eval_chunk_size", 32),
+        getattr(cfg.training, "eval_units_per_page", 128),
+    )
 
     # 1. Create ensembles
     pc_ens = get_place_cell_ensembles(cfg)
@@ -305,9 +363,6 @@ def train(cfg, data_path: str = None):
         momentum=cfg.training.momentum,
         weight_decay=cfg.training.weight_decay,
     )
-
-    scaler = torch.amp.GradScaler(device=device.type, enabled=(device.type == "cuda"))
-    logger.info("AMP enabled: %s", device.type == "cuda")
 
     if getattr(cfg.training, "use_tqdm", True) and tqdm is None:
         logger.warning("tqdm is not installed; falling back to plain logs")
@@ -345,7 +400,9 @@ def train(cfg, data_path: str = None):
     try:
         for epoch in range(cfg.training.epochs):
             # Use pre-generated data if provided, otherwise generate fresh each epoch
-            dataloader = _fixed_loader if _fixed_loader is not None else get_dataloader(cfg)
+            dataloader = (
+                _fixed_loader if _fixed_loader is not None else get_dataloader(cfg)
+            )
             num_steps = len(dataloader)
             step_log_interval = max(
                 1,
@@ -357,13 +414,17 @@ def train(cfg, data_path: str = None):
             epoch_start = time.time()
 
             use_tqdm = getattr(cfg.training, "use_tqdm", True) and tqdm is not None
-            progress = tqdm(
-                dataloader,
-                total=num_steps,
-                desc=f"epoch {epoch + 1}/{cfg.training.epochs}",
-                leave=False,
-                dynamic_ncols=True,
-            ) if use_tqdm else dataloader
+            progress = (
+                tqdm(
+                    dataloader,
+                    total=num_steps,
+                    desc=f"epoch {epoch + 1}/{cfg.training.epochs}",
+                    leave=False,
+                    dynamic_ncols=True,
+                )
+                if use_tqdm
+                else dataloader
+            )
 
             for step, batch in enumerate(progress):
                 optimizer.zero_grad()
@@ -376,32 +437,35 @@ def train(cfg, data_path: str = None):
                 if "init_cond" in batch:
                     init_cond = batch["init_cond"].float()
                     pc_targets = [batch[f"pc_targets_{i}"] for i in range(len(pc_ens))]
-                    hdc_targets = [batch[f"hdc_targets_{i}"] for i in range(len(hdc_ens))]
+                    hdc_targets = [
+                        batch[f"hdc_targets_{i}"] for i in range(len(hdc_ens))
+                    ]
                 else:
-                    init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
+                    init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(
+                        device
+                    )
                     pc_targets, hdc_targets = encode_targets(batch, pc_ens, hdc_ens)
 
-                with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
-                    pc_logits, hdc_logits, _, _ = model(
-                        init_cond, batch["ego_vel"], training=True
-                    )
+                pc_logits, hdc_logits, _, _ = model(
+                    init_cond, batch["ego_vel"], training=True
+                )
 
-                    loss = sum(
-                        ens.loss(logits, targets)
-                        for ens, logits, targets in zip(pc_ens, pc_logits, pc_targets)
+                loss = sum(
+                    ens.loss(logits, targets)
+                    for ens, logits, targets in zip(pc_ens, pc_logits, pc_targets)
+                )
+                loss += sum(
+                    ens.loss(logits, targets)
+                    for ens, logits, targets in zip(
+                        hdc_ens, hdc_logits, hdc_targets
                     )
-                    loss += sum(
-                        ens.loss(logits, targets)
-                        for ens, logits, targets in zip(hdc_ens, hdc_logits, hdc_targets)
-                    )
+                )
 
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
+                loss.backward()
                 torch.nn.utils.clip_grad_value_(
                     model.parameters(), cfg.training.grad_clip
                 )
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
 
                 loss_value = loss.item()
                 loss_acc.append(loss_value)
@@ -413,7 +477,9 @@ def train(cfg, data_path: str = None):
                         avg=f"{np.mean(loss_acc):.4f}",
                     )
 
-                should_log_step = ((step + 1) % step_log_interval == 0) or (step == num_steps - 1)
+                should_log_step = ((step + 1) % step_log_interval == 0) or (
+                    step == num_steps - 1
+                )
                 if writer is not None and should_log_step:
                     writer.add_scalar("train/loss_step", loss_value, global_step)
 
@@ -435,7 +501,9 @@ def train(cfg, data_path: str = None):
                 writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
 
             if epoch % cfg.training.eval_every == 0:
-                _evaluate(model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=writer)
+                _evaluate(
+                    model, pc_ens, hdc_ens, scorer, cfg, device, epoch, writer=writer
+                )
     finally:
         if writer is not None:
             writer.close()
