@@ -173,8 +173,10 @@ def _make_param_groups(model, cfg):
     Returns (param_groups, decoder_params) where decoder_params is the flat
     list of decoder parameter tensors (used for selective grad clipping).
     """
-    decoder_params = list(model.pc_heads.parameters()) + list(
-        model.hdc_heads.parameters()
+    decoder_params = (
+        list(model.pc_heads.parameters())
+        + list(model.hdc_heads.parameters())
+        + list(model.bottleneck.parameters())
     )
     decoder_ids = {id(p) for p in decoder_params}
     other_params = [p for p in model.parameters() if id(p) not in decoder_ids]
@@ -355,7 +357,9 @@ def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNa
 # ---------------------------------------------------------------------------
 
 
-def _evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, writer=None):
+def _evaluate(
+    model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, writer=None
+):
     """Collect bottleneck activations, compute grid scores, and optionally save a PDF."""
     model_was_training = model.training
     model.eval()
@@ -371,7 +375,9 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, w
         for batch in eval_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             init_cond = encode_initial_conditions(batch, pc_ens, hdc_ens).to(device)
-            pc_logits, _, bottleneck, _ = model(init_cond, batch["ego_vel"], training=False)
+            pc_logits, _, bottleneck, _ = model(
+                init_cond, batch["ego_vel"], training=False
+            )
             pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
             eval_pos_mse_sum += float(pos_mse.item())
             eval_pos_batches += 1
@@ -456,7 +462,9 @@ def _build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None):
     if resolved_eval_data_path is None:
         resolved_eval_data_path = getattr(cfg.training, "eval_data_path", None)
 
-    eval_batch_size = getattr(cfg.training, "eval_loader_batch_size", cfg.training.batch_size)
+    eval_batch_size = getattr(
+        cfg.training, "eval_loader_batch_size", cfg.training.batch_size
+    )
 
     if resolved_eval_data_path and os.path.exists(resolved_eval_data_path):
         logger.info("Loading eval trajectories from %s", resolved_eval_data_path)
@@ -665,15 +673,11 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
                 )
                 loss += sum(
                     ens.loss(logits, targets)
-                    for ens, logits, targets in zip(
-                        hdc_ens, hdc_logits, hdc_targets
-                    )
+                    for ens, logits, targets in zip(hdc_ens, hdc_logits, hdc_targets)
                 )
 
                 loss.backward()
-                torch.nn.utils.clip_grad_value_(
-                    decoder_params, cfg.training.grad_clip
-                )
+                torch.nn.utils.clip_grad_value_(decoder_params, cfg.training.grad_clip)
                 optimizer.step()
 
                 loss_value = loss.item()
