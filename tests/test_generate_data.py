@@ -85,6 +85,27 @@ def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
     assert calls == [(6, str(anim_path), 12, 16, 5, 7)]
 
 
+def test_resolve_visualization_bins_prefers_cli_then_config():
+    """CLI overrides should win over config for visualization bins."""
+    cfg = SimpleNamespace(
+        visualization=SimpleNamespace(spatial_bins=41, directional_bins=17)
+    )
+    args = SimpleNamespace(spatial_bins=75, directional_bins=None)
+
+    resolved = generate_data._resolve_visualization_bins(cfg, args)
+
+    assert resolved == {"spatial_bins": 75, "directional_bins": 17}
+
+
+def test_resolve_visualization_bins_rejects_non_positive_values():
+    """Visualization bins must remain positive integers."""
+    cfg = SimpleNamespace(visualization=SimpleNamespace(spatial_bins=0))
+    args = SimpleNamespace(spatial_bins=None, directional_bins=None)
+
+    with pytest.raises(ValueError, match="spatial_bins must be a positive integer"):
+        generate_data._resolve_visualization_bins(cfg, args)
+
+
 def test_visualize_animation_renders_frames_and_encodes_mp4(tmp_path, monkeypatch):
     """Animation export should render frame chunks and invoke ffmpeg encoding."""
     output_path = tmp_path / "train.npz"
@@ -201,6 +222,8 @@ def test_main_defaults_output_to_config_train_and_eval_paths(tmp_path, monkeypat
             progress_output=None,
             eval_progress_output=None,
             progress_every=4,
+            spatial_bins=None,
+            directional_bins=None,
             eval_output=None,
             train_only=False,
             eval_num_samples=None,
@@ -259,6 +282,8 @@ def test_main_train_only_skips_default_eval_output(tmp_path, monkeypatch):
             progress_output=None,
             eval_progress_output=None,
             progress_every=4,
+            spatial_bins=None,
+            directional_bins=None,
             eval_output=None,
             train_only=True,
             eval_num_samples=None,
@@ -310,6 +335,8 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
             progress_output=None,
             eval_progress_output=None,
             progress_every=4,
+            spatial_bins=None,
+            directional_bins=None,
             eval_output=str(eval_path),
             train_only=False,
             eval_num_samples=None,
@@ -367,6 +394,8 @@ def test_main_rejects_same_train_and_eval_output_paths(tmp_path, monkeypatch):
             progress_output=None,
             eval_progress_output=None,
             progress_every=4,
+            spatial_bins=None,
+            directional_bins=None,
             eval_output=None,
             train_only=False,
             eval_num_samples=None,
@@ -421,6 +450,8 @@ def test_main_rejects_train_only_with_eval_output(tmp_path, monkeypatch):
             progress_output=None,
             eval_progress_output=None,
             progress_every=4,
+            spatial_bins=None,
+            directional_bins=None,
             eval_output=str(eval_path),
             train_only=True,
             eval_num_samples=None,

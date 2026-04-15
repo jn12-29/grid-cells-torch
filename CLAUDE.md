@@ -7,3 +7,4 @@
 - `generate_data.py` now defaults to generating both `training.data_path` (usually `data/train.npz`) and `training.eval_data_path` (`data/eval.npz`); pass `--train_only` to skip the eval split.
 - `generate_data.py` supports chunked multiprocessing via `--num_workers`, and can write a continuously refreshed headless-safe preview PNG via `--visualize_progress`.
 - `generate_data.py` can also export an MP4 trajectory animation via `--animate` / `--anim_output` (requires `ffmpeg`), using parallel frame rendering with `--anim_workers` and render/encode progress bars.
+- Visualisation bins for `generate_data.py` are configurable from `config.yaml` under `visualization.spatial_bins` and `visualization.directional_bins`, and can also be overridden via `--spatial_bins` / `--directional_bins`.

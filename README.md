@@ -510,11 +510,27 @@ print(f"Grid score 90°: {score_90:.4f}")
 | `--progress_output` | `<output>_progress.png` | 主输出文件对应的过程预览图路径 |
 | `--eval_progress_output` | `<resolved eval output>_progress.png` | eval split 的过程预览图路径 |
 | `--progress_every` | `4` | 每完成多少个 chunk 刷新一次过程预览图 |
+| `--spatial_bins` | `visualization.spatial_bins` 或 `32` | 空间/平移相关图的 bin 数；位置热图会变成 `spatial_bins x spatial_bins` 网格，速度直方图会变成 `spatial_bins` 个柱子 |
+| `--directional_bins` | `visualization.directional_bins` 或 `20` | 方向/角度相关图的 bin 数；角速度直方图和 head direction rose chart 都会使用这个值 |
 | `--eval_output` | `training.eval_data_path` | eval split 保存路径，默认 `data/eval.npz` |
 | `--train_only` | 关闭 | 只生成主输出，不生成默认 eval split |
 | `--eval_num_samples` | `training.eval_batch_size` | eval split 的样本数 |
 | `--eval_seed` | `seed + 1` | eval split 的随机种子 |
 | `--vis_output` | `<output>_vis.pdf` | 可视化 PDF 的保存路径 |
+
+如果你想把这些可视化 bin 固定写进配置文件，可以在 `config.yaml` 里加/改：
+
+```yaml
+visualization:
+  spatial_bins: 32
+  directional_bins: 20
+```
+
+CLI 会覆盖 config，例如：
+
+```bash
+python generate_data.py --visualize --visualize_progress --spatial_bins 32 --directional_bins 20
+```
 
 训练时使用保存的数据：
 

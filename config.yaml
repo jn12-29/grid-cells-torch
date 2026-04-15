@@ -41,3 +41,7 @@ training:
   eval_num_workers: 4
   eval_chunk_size: 32
   eval_units_per_page: 128
+
+visualization:
+  spatial_bins: 32
+  directional_bins: 20

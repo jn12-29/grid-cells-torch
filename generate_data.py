@@ -49,6 +49,10 @@ from dataset import TrajectoryDataset
 from train import load_config
 
 
+DEFAULT_SPATIAL_BINS = 32
+DEFAULT_DIRECTIONAL_BINS = 20
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -185,7 +189,44 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="Refresh the progress preview every N completed chunks",
     )
+    parser.add_argument(
+        "--spatial_bins",
+        type=int,
+        default=None,
+        help="Bin count for spatial/translational visualisations "
+        f"(default: visualization.spatial_bins or {DEFAULT_SPATIAL_BINS})",
+    )
+    parser.add_argument(
+        "--directional_bins",
+        type=int,
+        default=None,
+        help="Bin count for directional/angular visualisations "
+        f"(default: visualization.directional_bins or {DEFAULT_DIRECTIONAL_BINS})",
+    )
     return parser.parse_args()
+
+
+def _resolve_visualization_bins(cfg, args) -> dict:
+    """Resolve visualisation bin counts from CLI, config, and defaults."""
+    vis_cfg = getattr(cfg, "visualization", None)
+    bins = {
+        "spatial_bins": getattr(args, "spatial_bins", None),
+        "directional_bins": getattr(args, "directional_bins", None),
+    }
+    defaults = {
+        "spatial_bins": DEFAULT_SPATIAL_BINS,
+        "directional_bins": DEFAULT_DIRECTIONAL_BINS,
+    }
+
+    for name, value in bins.items():
+        if value is None:
+            value = getattr(vis_cfg, name, defaults[name]) if vis_cfg is not None else defaults[name]
+        value = int(value)
+        if value <= 0:
+            raise ValueError(f"{name} must be a positive integer, got {value}.")
+        bins[name] = value
+
+    return bins
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +234,12 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 
-def visualize(dataset: TrajectoryDataset, save_path: str) -> None:
+def visualize(
+    dataset: TrajectoryDataset,
+    save_path: str,
+    spatial_bins: int = DEFAULT_SPATIAL_BINS,
+    directional_bins: int = DEFAULT_DIRECTIONAL_BINS,
+) -> None:
     """Produce a multi-panel summary figure and save as PDF.
 
     Panels
@@ -254,11 +300,10 @@ def visualize(dataset: TrajectoryDataset, save_path: str) -> None:
 
         # --- panel 2: position coverage heatmap ---
         ax_heat = fig.add_subplot(gs[0, 2])
-        nbins = 40
         heatmap, xedges, yedges = np.histogram2d(
             pos_all[:, :, 0].ravel(),
             pos_all[:, :, 1].ravel(),
-            bins=nbins,
+            bins=spatial_bins,
             range=[[-half, half], [-half, half]],
         )
         im = ax_heat.imshow(
@@ -275,7 +320,13 @@ def visualize(dataset: TrajectoryDataset, save_path: str) -> None:
 
         # --- panel 3: speed distribution ---
         ax_spd = fig.add_subplot(gs[0, 3])
-        ax_spd.hist(speeds, bins=60, color="steelblue", edgecolor="none", density=True)
+        ax_spd.hist(
+            speeds,
+            bins=spatial_bins,
+            color="steelblue",
+            edgecolor="none",
+            density=True,
+        )
         ax_spd.axvline(
             speeds.mean(),
             color="tomato",
@@ -290,7 +341,11 @@ def visualize(dataset: TrajectoryDataset, save_path: str) -> None:
         # --- panel 4: angular velocity distribution ---
         ax_omg = fig.add_subplot(gs[1, 0])
         ax_omg.hist(
-            omegas, bins=60, color="mediumpurple", edgecolor="none", density=True
+            omegas,
+            bins=directional_bins,
+            color="mediumpurple",
+            edgecolor="none",
+            density=True,
         )
         ax_omg.axvline(
             omegas.mean(),
@@ -305,10 +360,11 @@ def visualize(dataset: TrajectoryDataset, save_path: str) -> None:
 
         # --- panel 5: head direction rose (polar histogram) ---
         ax_hd = fig.add_subplot(gs[1, 1], projection="polar")
-        n_bins = 36
-        counts, bin_edges = np.histogram(hds, bins=n_bins, range=(-np.pi, np.pi))
+        counts, bin_edges = np.histogram(
+            hds, bins=directional_bins, range=(-np.pi, np.pi)
+        )
         bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-        width = 2 * np.pi / n_bins
+        width = 2 * np.pi / directional_bins
         ax_hd.bar(
             bin_centers,
             counts,
@@ -593,6 +649,8 @@ class GenerationProgressPreview:
         env_size: float,
         save_path: str,
         refresh_every: int = 4,
+        spatial_bins: int = DEFAULT_SPATIAL_BINS,
+        directional_bins: int = DEFAULT_DIRECTIONAL_BINS,
     ) -> None:
         self.total_samples = total_samples
         self.env_size = env_size
@@ -600,15 +658,15 @@ class GenerationProgressPreview:
         self.refresh_every = max(1, int(refresh_every))
         self.completed_chunks = 0
         self.sample_trajectories = []
-        self.heatmap_bins = 40
+        self.heatmap_bins = int(spatial_bins)
         self.heatmap = np.zeros(
             (self.heatmap_bins, self.heatmap_bins), dtype=np.float64
         )
-        self.speed_edges = np.linspace(0.0, 1.0, 61)
+        self.speed_edges = np.linspace(0.0, 1.0, int(spatial_bins) + 1)
         self.speed_hist = np.zeros(len(self.speed_edges) - 1, dtype=np.int64)
-        self.omega_edges = np.linspace(-8.0, 8.0, 61)
+        self.omega_edges = np.linspace(-8.0, 8.0, int(directional_bins) + 1)
         self.omega_hist = np.zeros(len(self.omega_edges) - 1, dtype=np.int64)
-        self.hd_edges = np.linspace(-np.pi, np.pi, 37)
+        self.hd_edges = np.linspace(-np.pi, np.pi, int(directional_bins) + 1)
         self.hd_hist = np.zeros(len(self.hd_edges) - 1, dtype=np.int64)
         self.last_completed_samples = 0
         self.last_chunk_range = None
@@ -773,6 +831,8 @@ class GenerationMonitor:
         env_size: float,
         progress_output: str = None,
         progress_every: int = 4,
+        spatial_bins: int = DEFAULT_SPATIAL_BINS,
+        directional_bins: int = DEFAULT_DIRECTIONAL_BINS,
     ) -> None:
         self.label = label
         self.total_samples = total_samples
@@ -789,6 +849,8 @@ class GenerationMonitor:
                 env_size=env_size,
                 save_path=progress_output,
                 refresh_every=progress_every,
+                spatial_bins=spatial_bins,
+                directional_bins=directional_bins,
             )
 
     def update(self, event: dict) -> None:
@@ -833,6 +895,8 @@ def generate_dataset_file(
     num_workers: int = 1,
     progress_output: str = None,
     progress_every: int = 4,
+    spatial_bins: int = DEFAULT_SPATIAL_BINS,
+    directional_bins: int = DEFAULT_DIRECTIONAL_BINS,
 ) -> TrajectoryDataset:
     """Generate one dataset file and optionally emit its visualization PDF."""
     print(
@@ -846,6 +910,8 @@ def generate_dataset_file(
         env_size=env_size,
         progress_output=progress_output,
         progress_every=progress_every,
+        spatial_bins=spatial_bins,
+        directional_bins=directional_bins,
     )
     try:
         dataset = TrajectoryDataset(
@@ -862,7 +928,12 @@ def generate_dataset_file(
     dataset.save(output_path)
 
     if visualize_output is not None:
-        visualize(dataset, visualize_output)
+        visualize(
+            dataset,
+            visualize_output,
+            spatial_bins=spatial_bins,
+            directional_bins=directional_bins,
+        )
 
     if animation_output is not None:
         visualize_animation(
@@ -914,6 +985,7 @@ def main() -> None:
     seq_len = args.seq_len or cfg.task.seq_len
     env_size = args.env_size or cfg.task.env_size
     seed = args.seed if args.seed is not None else cfg.task.neurons_seed
+    visualization_bins = _resolve_visualization_bins(cfg, args)
 
     vis_path = None
     if args.visualize:
@@ -953,6 +1025,8 @@ def main() -> None:
         num_workers=args.num_workers,
         progress_output=progress_path,
         progress_every=args.progress_every,
+        spatial_bins=visualization_bins["spatial_bins"],
+        directional_bins=visualization_bins["directional_bins"],
     )
 
     if eval_output_path is not None:
@@ -976,6 +1050,8 @@ def main() -> None:
             num_workers=args.num_workers,
             progress_output=eval_progress_path,
             progress_every=args.progress_every,
+            spatial_bins=visualization_bins["spatial_bins"],
+            directional_bins=visualization_bins["directional_bins"],
         )
 
 
