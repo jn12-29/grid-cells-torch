@@ -23,8 +23,12 @@ python generate_data.py --config my_config.yaml --output data/train.npz
 """
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 
 import matplotlib
@@ -32,7 +36,6 @@ import matplotlib
 matplotlib.use("Agg")  # headless-safe; override below if displaying
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import animation
 
 try:
     from tqdm.auto import tqdm
@@ -136,6 +139,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=20,
         help="Frames per second for the trajectory animation MP4",
+    )
+    parser.add_argument(
+        "--anim_workers",
+        type=int,
+        default=8,
+        help="Number of worker processes for MP4 frame rendering",
+    )
+    parser.add_argument(
+        "--anim_chunk_size",
+        type=int,
+        default=32,
+        help="Number of frames rendered per animation worker chunk",
     )
     parser.add_argument(
         "--num_workers",
@@ -361,9 +376,11 @@ def visualize_animation(
     save_path: str,
     fps: int = 20,
     max_trajectories: int = 16,
+    num_workers: int = 8,
+    chunk_size: int = 32,
 ) -> None:
-    """Save an MP4 animation showing trajectories unfolding over time."""
-    if not animation.writers.is_available("ffmpeg"):
+    """Save an MP4 animation by rendering frames in parallel and encoding with ffmpeg."""
+    if shutil.which("ffmpeg") is None:
         raise RuntimeError(
             "MP4 animation export requires ffmpeg to be installed and available on PATH."
         )
@@ -378,15 +395,79 @@ def visualize_animation(
         axis=1,
     )
     num_frames = full_pos.shape[1]
-    half = dataset.env_size / 2.0
-    colors = plt.cm.tab20(np.linspace(0.0, 1.0, max(num_show, 1), endpoint=False))
+    if num_show == 0:
+        raise ValueError("Cannot animate an empty dataset.")
+
+    chunk_size = max(1, int(chunk_size))
+    num_workers = max(1, int(num_workers))
+    colors = plt.cm.tab20(np.linspace(0.0, 1.0, max(num_show, 1), endpoint=False)).astype(
+        np.float32
+    )
+    frame_chunks = [
+        (start, min(start + chunk_size, num_frames))
+        for start in range(0, num_frames, chunk_size)
+    ]
+    render_workers = min(num_workers, max(1, len(frame_chunks)))
+
+    with tempfile.TemporaryDirectory(prefix="traj_frames_") as frames_dir:
+        render_desc = f"render:{os.path.basename(save_path)}"
+        render_bar = (
+            tqdm(total=num_frames, desc=render_desc, unit="frame")
+            if tqdm is not None
+            else None
+        )
+        try:
+            render_tasks = [
+                (
+                    full_pos,
+                    colors,
+                    dataset.env_size,
+                    dataset.seq_len,
+                    start,
+                    end,
+                    frames_dir,
+                )
+                for start, end in frame_chunks
+            ]
+            if render_workers == 1 or len(render_tasks) == 1:
+                for task in render_tasks:
+                    rendered = _render_animation_chunk(task)
+                    if render_bar is not None:
+                        render_bar.update(rendered)
+            else:
+                with ProcessPoolExecutor(max_workers=render_workers) as executor:
+                    futures = [executor.submit(_render_animation_chunk, task) for task in render_tasks]
+                    for future in as_completed(futures):
+                        rendered = future.result()
+                        if render_bar is not None:
+                            render_bar.update(rendered)
+        finally:
+            if render_bar is not None:
+                render_bar.close()
+
+        _encode_animation_frames(frames_dir, save_path, fps=max(fps, 1), num_frames=num_frames)
+
+    print(f"Animation saved to {save_path}")
+
+
+def _render_animation_chunk(task) -> int:
+    """Render one chunk of animation frames to PNG files."""
+    full_pos, colors, env_size, seq_len, start_frame, end_frame, frames_dir = task
+    half = env_size / 2.0
+    num_show = full_pos.shape[0]
 
     fig, ax = plt.subplots(figsize=(7, 7))
     line_artists = [
         ax.plot([], [], color=colors[i], alpha=0.75, linewidth=1.5)[0]
         for i in range(num_show)
     ]
-    point_artist = ax.scatter([], [], s=32, c=colors[:num_show], zorder=3)
+    point_artist = ax.scatter(
+        full_pos[:, 0, 0],
+        full_pos[:, 0, 1],
+        s=32,
+        c=colors[:num_show],
+        zorder=3,
+    )
     time_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, ha="left", va="top")
 
     ax.set_xlim(-half, half)
@@ -398,45 +479,104 @@ def visualize_animation(
     ax.add_patch(
         plt.Rectangle(
             (-half, -half),
-            dataset.env_size,
-            dataset.env_size,
+            env_size,
+            env_size,
             fill=False,
             edgecolor="k",
             linewidth=1.5,
         )
     )
 
-    def init_frame():
-        empty_offsets = np.empty((0, 2), dtype=np.float32)
-        point_artist.set_offsets(empty_offsets)
-        for line in line_artists:
-            line.set_data([], [])
-        time_text.set_text("")
-        return [*line_artists, point_artist, time_text]
+    try:
+        for frame_idx in range(start_frame, end_frame):
+            for traj_idx, line in enumerate(line_artists):
+                xy = full_pos[traj_idx, : frame_idx + 1]
+                line.set_data(xy[:, 0], xy[:, 1])
 
-    def update_frame(frame_idx: int):
-        for traj_idx, line in enumerate(line_artists):
-            xy = full_pos[traj_idx, : frame_idx + 1]
-            line.set_data(xy[:, 0], xy[:, 1])
+            point_artist.set_offsets(full_pos[:, frame_idx, :])
+            logical_step = max(frame_idx - 1, 0)
+            time_text.set_text(
+                f"step {logical_step}/{seq_len}\ntime {logical_step * TrajectoryDataset._DT:.2f}s"
+            )
+            frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
+            fig.savefig(frame_path, dpi=120)
+    finally:
+        plt.close(fig)
 
-        point_artist.set_offsets(full_pos[:, frame_idx, :])
-        time_text.set_text(
-            f"step {max(frame_idx - 1, 0)}/{dataset.seq_len}"
-            f"\ntime {max(frame_idx - 1, 0) * TrajectoryDataset._DT:.2f}s"
-        )
-        return [*line_artists, point_artist, time_text]
+    return end_frame - start_frame
 
-    anim = animation.FuncAnimation(
-        fig,
-        update_frame,
-        init_func=init_frame,
-        frames=num_frames,
-        interval=1000 / max(fps, 1),
-        blit=False,
+
+def _encode_animation_frames(
+    frames_dir: str,
+    save_path: str,
+    fps: int,
+    num_frames: int,
+) -> None:
+    """Encode rendered PNG frames into an MP4, showing ffmpeg progress when available."""
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-framerate",
+        str(fps),
+        "-i",
+        os.path.join(frames_dir, "frame_%06d.png"),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        save_path,
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
     )
-    anim.save(save_path, writer=animation.FFMpegWriter(fps=max(fps, 1), bitrate=1800))
-    plt.close(fig)
-    print(f"Animation saved to {save_path}")
+
+    encode_bar = (
+        tqdm(total=num_frames, desc=f"encode:{os.path.basename(save_path)}", unit="frame")
+        if tqdm is not None
+        else None
+    )
+    last_frame = 0
+
+    try:
+        if process.stdout is not None:
+            for line in process.stdout:
+                entry = line.strip()
+                if not entry.startswith("frame="):
+                    continue
+                try:
+                    current_frame = min(num_frames, int(entry.split("=", 1)[1]))
+                except ValueError:
+                    continue
+                if encode_bar is not None and current_frame > last_frame:
+                    encode_bar.update(current_frame - last_frame)
+                last_frame = current_frame
+
+        stderr_output = ""
+        if process.stderr is not None:
+            stderr_output = process.stderr.read()
+        return_code = process.wait()
+        if encode_bar is not None and last_frame < num_frames:
+            encode_bar.update(num_frames - last_frame)
+        if return_code != 0:
+            raise RuntimeError(
+                "ffmpeg failed while encoding the trajectory animation.\n"
+                f"Command: {' '.join(command)}\n"
+                f"stderr:\n{stderr_output.strip()}"
+            )
+    finally:
+        if encode_bar is not None:
+            encode_bar.close()
 
 
 class GenerationProgressPreview:
@@ -683,6 +823,8 @@ def generate_dataset_file(
     visualize_output: str = None,
     animation_output: str = None,
     animation_fps: int = 20,
+    anim_workers: int = 8,
+    anim_chunk_size: int = 32,
     num_workers: int = 1,
     progress_output: str = None,
     progress_every: int = 4,
@@ -718,7 +860,13 @@ def generate_dataset_file(
         visualize(dataset, visualize_output)
 
     if animation_output is not None:
-        visualize_animation(dataset, animation_output, fps=animation_fps)
+        visualize_animation(
+            dataset,
+            animation_output,
+            fps=animation_fps,
+            num_workers=anim_workers,
+            chunk_size=anim_chunk_size,
+        )
 
     return dataset
 
@@ -780,6 +928,8 @@ def main() -> None:
         visualize_output=vis_path,
         animation_output=anim_path,
         animation_fps=args.anim_fps,
+        anim_workers=args.anim_workers,
+        anim_chunk_size=args.anim_chunk_size,
         num_workers=args.num_workers,
         progress_output=progress_path,
         progress_every=args.progress_every,

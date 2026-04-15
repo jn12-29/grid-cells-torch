@@ -143,6 +143,9 @@ python generate_data.py --output data/train.npz --num_workers 8 --visualize_prog
 # 导出运行轨迹的 MP4 动态可视化
 python generate_data.py --output data/train.npz --animate
 
+# 并行渲染 MP4 帧并显示 render/encode 进度条
+python generate_data.py --output data/train.npz --animate --anim_workers 8
+
 # 一次生成 train/eval 两个 split（推荐）
 python generate_data.py --output data/train.npz --eval_output data/eval.npz
 
@@ -159,7 +162,7 @@ python generate_data.py \
 
 推荐约定是把训练集保存为 `data/train.npz`，评估集保存为 `data/eval.npz`。默认情况下，`generate_data.py` 会把主输出写到 `training.data_path`（默认 `data/train.npz`），训练也会优先复用这一路径；固定 eval split 仍默认使用 `data/eval.npz`。
 
-生成完成后 `data/train.npz` 包含所有轨迹，`data/train_vis.pdf` 是可视化报告（见下节）。如果启用 `--visualize_progress`，生成过程中还会周期性刷新 `data/train_progress.png`，方便在无 GUI 的环境里观察当前覆盖范围、速度分布和生成进度。如果启用 `--animate`，还会额外导出 `data/train_traj.mp4`，展示示例轨迹如何随时间展开。
+生成完成后 `data/train.npz` 包含所有轨迹，`data/train_vis.pdf` 是可视化报告（见下节）。如果启用 `--visualize_progress`，生成过程中还会周期性刷新 `data/train_progress.png`，方便在无 GUI 的环境里观察当前覆盖范围、速度分布和生成进度。如果启用 `--animate`，还会额外导出 `data/train_traj.mp4`，展示示例轨迹如何随时间展开。MP4 导出现在会先并行渲染 PNG 帧，再调用 `ffmpeg` 合成，并分别显示 `render:*` 与 `encode:*` 进度条。
 
 ### 手动生成并查看轨迹
 
@@ -216,6 +219,8 @@ plt.savefig("trajectory.png")
 - 路径随时间逐步展开
 - 每条轨迹的当前位置
 - 当前 step 和累计时间
+
+默认会用 `8` 个进程并行渲染视频帧，可通过 `--anim_workers` 和 `--anim_chunk_size` 调整吞吐与内存占用。
 
 MP4 导出依赖系统里的 `ffmpeg`。
 
@@ -495,7 +500,9 @@ print(f"Grid score 90°: {score_90:.4f}")
 | `--animate` | 关闭 | 是否生成运行轨迹的 MP4 动画 |
 | `--anim_output` | `<output>_traj.mp4` | 轨迹动画 MP4 的保存路径 |
 | `--anim_fps` | `20` | 轨迹动画的帧率 |
-| `--num_workers` | `1` | 轨迹分块生成时使用的进程数 |
+| `--anim_workers` | `8` | 并行渲染 MP4 帧时使用的进程数 |
+| `--anim_chunk_size` | `32` | 每个动画 worker 一次渲染的帧数 |
+| `--num_workers` | `8` | 轨迹分块生成时使用的进程数 |
 | `--visualize_progress` | 关闭 | 是否在生成期间周期性写出过程预览 PNG |
 | `--progress_output` | `<output>_progress.png` | 主输出文件对应的过程预览图路径 |
 | `--eval_progress_output` | `<eval_output>_progress.png` | eval split 的过程预览图路径 |

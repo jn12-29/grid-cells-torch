@@ -6,4 +6,4 @@
 - `train.py` now logs decoded position MSE for both training and evaluation by mapping place-cell logits back to 2-D coordinates.
 - `generate_data.py` defaults its main output path to `training.data_path` (usually `data/train.npz`) and can still emit both splits in one invocation via `--output ... --eval_output ...`.
 - `generate_data.py` supports chunked multiprocessing via `--num_workers`, and can write a continuously refreshed headless-safe preview PNG via `--visualize_progress`.
-- `generate_data.py` can also export an MP4 trajectory animation via `--animate` / `--anim_output` (requires `ffmpeg`).
+- `generate_data.py` can also export an MP4 trajectory animation via `--animate` / `--anim_output` (requires `ffmpeg`), using parallel frame rendering with `--anim_workers` and render/encode progress bars.

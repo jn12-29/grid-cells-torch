@@ -52,8 +52,17 @@ def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
     anim_path = tmp_path / "train_traj.mp4"
     calls = []
 
-    def fake_visualize_animation(dataset, save_path, fps=20, max_trajectories=16):
-        calls.append((dataset.num_samples, save_path, fps, max_trajectories))
+    def fake_visualize_animation(
+        dataset,
+        save_path,
+        fps=20,
+        max_trajectories=16,
+        num_workers=8,
+        chunk_size=32,
+    ):
+        calls.append(
+            (dataset.num_samples, save_path, fps, max_trajectories, num_workers, chunk_size)
+        )
         anim_path.write_bytes(b"fake-mp4")
 
     monkeypatch.setattr(generate_data, "visualize_animation", fake_visualize_animation)
@@ -67,10 +76,85 @@ def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
         seed=3,
         animation_output=str(anim_path),
         animation_fps=12,
+        anim_workers=5,
+        anim_chunk_size=7,
     )
 
     assert anim_path.exists()
-    assert calls == [(6, str(anim_path), 12, 16)]
+    assert calls == [(6, str(anim_path), 12, 16, 5, 7)]
+
+
+def test_visualize_animation_renders_frames_and_encodes_mp4(tmp_path, monkeypatch):
+    """Animation export should render frame chunks and invoke ffmpeg encoding."""
+    output_path = tmp_path / "train.npz"
+    anim_path = tmp_path / "train_traj.mp4"
+    dataset = generate_data.generate_dataset_file(
+        output_path=str(output_path),
+        num_samples=4,
+        seq_len=5,
+        env_size=2.2,
+        velocity_noise=[0.0, 0.0, 0.0],
+        seed=3,
+    )
+
+    render_calls = []
+    encode_calls = []
+
+    def fake_render_animation_chunk(task):
+        full_pos, colors, env_size, seq_len, start_frame, end_frame, frames_dir = task
+        render_calls.append((start_frame, end_frame, full_pos.shape[0], seq_len, len(colors)))
+        for frame_idx in range(start_frame, end_frame):
+            frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
+            with open(frame_path, "wb") as handle:
+                handle.write(b"png")
+        return end_frame - start_frame
+
+    def fake_encode_animation_frames(frames_dir, save_path, fps, num_frames):
+        encode_calls.append((frames_dir, save_path, fps, num_frames))
+        with open(save_path, "wb") as handle:
+            handle.write(b"fake-mp4")
+
+    class DummyFuture:
+        def __init__(self, result_value):
+            self._result_value = result_value
+
+        def result(self):
+            return self._result_value
+
+    class DummyExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            return DummyFuture(fn(*args, **kwargs))
+
+    monkeypatch.setattr(generate_data, "_render_animation_chunk", fake_render_animation_chunk)
+    monkeypatch.setattr(generate_data, "_encode_animation_frames", fake_encode_animation_frames)
+    monkeypatch.setattr(generate_data, "ProcessPoolExecutor", DummyExecutor)
+    monkeypatch.setattr(generate_data, "as_completed", lambda futures: futures)
+
+    generate_data.visualize_animation(
+        dataset,
+        str(anim_path),
+        fps=12,
+        max_trajectories=4,
+        num_workers=2,
+        chunk_size=2,
+    )
+
+    assert anim_path.exists()
+    assert render_calls == [
+        (0, 2, 4, 5, 4),
+        (2, 4, 4, 5, 4),
+        (4, 6, 4, 5, 4),
+    ]
+    assert encode_calls[0][1:] == (str(anim_path), 12, 6)
 
 
 def test_main_defaults_output_to_config_training_data_path(tmp_path, monkeypatch):
@@ -107,6 +191,8 @@ def test_main_defaults_output_to_config_training_data_path(tmp_path, monkeypatch
             vis_output=None,
             anim_output=None,
             anim_fps=20,
+            anim_workers=8,
+            anim_chunk_size=32,
             num_workers=1,
             visualize_progress=False,
             progress_output=None,
@@ -154,6 +240,8 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
             vis_output=None,
             anim_output=None,
             anim_fps=20,
+            anim_workers=8,
+            anim_chunk_size=32,
             num_workers=1,
             visualize_progress=False,
             progress_output=None,
