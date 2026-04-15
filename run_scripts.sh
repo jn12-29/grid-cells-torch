@@ -1,1 +1,1 @@
-CUDA_VISIBLE_DEVICES=3 python train.py
+CUDA_VISIBLE_DEVICES=4 python train.py

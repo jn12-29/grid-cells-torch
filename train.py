@@ -39,6 +39,7 @@ from utils import (
     encode_initial_conditions,
     encode_targets,
     get_scores_and_plot_from_ratemaps,
+    score_ratemaps,
 )
 
 
@@ -164,27 +165,59 @@ def create_summary_writer(cfg, logger: logging.Logger):
     return writer
 
 
+def _make_param_groups(model, cfg):
+    """Split model parameters into two groups.
+
+    Decoder heads (pc_heads / hdc_heads) receive the configured weight_decay;
+    all other parameters are trained without weight decay.
+    Returns (param_groups, decoder_params) where decoder_params is the flat
+    list of decoder parameter tensors (used for selective grad clipping).
+    """
+    decoder_params = list(model.pc_heads.parameters()) + list(
+        model.hdc_heads.parameters()
+    )
+    decoder_ids = {id(p) for p in decoder_params}
+    other_params = [p for p in model.parameters() if id(p) not in decoder_ids]
+
+    param_groups = [
+        {"params": other_params, "weight_decay": 0.0},
+        {"params": decoder_params, "weight_decay": cfg.training.weight_decay},
+    ]
+    return param_groups, decoder_params
+
+
 def build_optimizer(model, cfg):
-    """Build the configured optimizer for training."""
+    """Build the configured optimizer for training.
+
+    Weight decay is applied exclusively to the decoder heads (pc_heads /
+    hdc_heads); all other parameters are trained without weight decay.
+    Returns (optimizer, decoder_params) so the caller can reuse
+    decoder_params for selective gradient clipping.
+    """
+    param_groups, decoder_params = _make_param_groups(model, cfg)
     optimizer_name = getattr(cfg.training, "optimizer", "rmsprop").lower()
 
     if optimizer_name == "rmsprop":
-        return torch.optim.RMSprop(
-            model.parameters(),
+        optimizer = torch.optim.RMSprop(
+            param_groups,
             lr=cfg.training.lr,
             momentum=cfg.training.momentum,
-            weight_decay=cfg.training.weight_decay,
+            # weight_decay is set per-group; pass 0 as the global default
+            weight_decay=0.0,
         )
+        return optimizer, decoder_params
 
     if optimizer_name == "adamw":
         beta1, beta2 = getattr(cfg.training, "adamw_betas", [0.9, 0.999])
-        return torch.optim.AdamW(
-            model.parameters(),
+        optimizer = torch.optim.AdamW(
+            param_groups,
             lr=cfg.training.lr,
             betas=(beta1, beta2),
             eps=getattr(cfg.training, "adamw_eps", 1e-8),
-            weight_decay=cfg.training.weight_decay,
+            # weight_decay is set per-group; pass 0 as the global default
+            weight_decay=0.0,
         )
+        return optimizer, decoder_params
 
     raise ValueError(f"Unsupported optimizer: {cfg.training.optimizer}")
 
@@ -288,6 +321,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--training.eval_units_per_page", type=int, dest="training__eval_units_per_page"
     )
+    parser.add_argument(
+        "--training.eval_loader_batch_size",
+        type=int,
+        dest="training__eval_loader_batch_size",
+    )
+    parser.add_argument(
+        "--training.eval_plot_every",
+        type=int,
+        dest="training__eval_plot_every",
+    )
+    parser.add_argument(
+        "--training.eval_pdf_dpi",
+        type=int,
+        dest="training__eval_pdf_dpi",
+    )
 
     return parser.parse_args()
 
@@ -308,7 +356,7 @@ def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNa
 
 
 def _evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, writer=None):
-    """Collect bottleneck activations, compute grid scores, and save a PDF."""
+    """Collect bottleneck activations, compute grid scores, and optionally save a PDF."""
     model_was_training = model.training
     model.eval()
 
@@ -334,36 +382,69 @@ def _evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, w
                 ratemap_counts,
             )
 
+    infer_seconds = time.time() - eval_start
     ratemaps = scorer.finalize_ratemaps(ratemap_sums, ratemap_counts)
 
-    save_dir = cfg.training.save_dir
-    filename = f"rates_and_sac_epoch_{epoch:04d}.pdf"
-    scores = get_scores_and_plot_from_ratemaps(
-        scorer,
-        ratemaps,
-        save_dir,
-        filename,
-        num_workers=getattr(cfg.training, "eval_num_workers", 0),
-        chunk_size=getattr(cfg.training, "eval_chunk_size", 32),
-        units_per_page=getattr(cfg.training, "eval_units_per_page", 128),
-    )
-    logger = logging.getLogger("grid_cells")
+    # Determine whether to save a PDF this eval.
+    # eval_plot_every=N means "save PDF every N evals"; 0 means never.
+    # epoch is 0 for pre-training eval, then eval_every, 2*eval_every, ...
+    plot_every = getattr(cfg.training, "eval_plot_every", 1)
+    eval_every = cfg.training.eval_every
+    eval_index = epoch // max(1, eval_every)  # 0, 1, 2, ...
+    save_pdf = (plot_every > 0) and (eval_index % plot_every == 0)
+
+    score_start = time.time()
+    num_workers = getattr(cfg.training, "eval_num_workers", 0)
+    chunk_size = getattr(cfg.training, "eval_chunk_size", 32)
+
+    if save_pdf:
+        save_dir = cfg.training.save_dir
+        filename = f"rates_and_sac_epoch_{epoch:04d}.pdf"
+        scores = get_scores_and_plot_from_ratemaps(
+            scorer,
+            ratemaps,
+            save_dir,
+            filename,
+            num_workers=num_workers,
+            chunk_size=chunk_size,
+            units_per_page=getattr(cfg.training, "eval_units_per_page", 128),
+            pdf_dpi=getattr(cfg.training, "eval_pdf_dpi", 72),
+        )
+        score_60 = scores[0]
+        score_90 = scores[1]
+    else:
+        score_60, score_90, _, _, _ = score_ratemaps(
+            scorer,
+            ratemaps,
+            num_workers=num_workers,
+            chunk_size=chunk_size,
+        )
+
+    score_seconds = time.time() - score_start
     eval_seconds = time.time() - eval_start
     eval_pos_mse = eval_pos_mse_sum / max(eval_pos_batches, 1)
+
+    logger = logging.getLogger("grid_cells")
     logger.info(
-        "eval epoch=%d  pos_mse=%.6f  grid_score_60 max=%.4f  grid_score_90 max=%.4f  seconds=%.1f",
+        "eval epoch=%d  pos_mse=%.6f  grid_score_60 max=%.4f  grid_score_90 max=%.4f"
+        "  infer=%.1fs  score=%.1fs  total=%.1fs  pdf=%s",
         epoch,
         eval_pos_mse,
-        scores[0].max(),
-        scores[1].max(),
+        float(score_60.max()),
+        float(score_90.max()),
+        infer_seconds,
+        score_seconds,
         eval_seconds,
+        save_pdf,
     )
 
     if writer is not None:
         writer.add_scalar("eval/pos_mse", eval_pos_mse, epoch)
-        writer.add_scalar("eval/grid_score_60_max", float(scores[0].max()), epoch)
-        writer.add_scalar("eval/grid_score_90_max", float(scores[1].max()), epoch)
+        writer.add_scalar("eval/grid_score_60_max", float(score_60.max()), epoch)
+        writer.add_scalar("eval/grid_score_90_max", float(score_90.max()), epoch)
         writer.add_scalar("eval/seconds", eval_seconds, epoch)
+        writer.add_scalar("eval/infer_seconds", infer_seconds, epoch)
+        writer.add_scalar("eval/score_seconds", score_seconds, epoch)
 
     if model_was_training:
         model.train()
@@ -375,12 +456,15 @@ def _build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None):
     if resolved_eval_data_path is None:
         resolved_eval_data_path = getattr(cfg.training, "eval_data_path", None)
 
+    eval_batch_size = getattr(cfg.training, "eval_loader_batch_size", cfg.training.batch_size)
+
     if resolved_eval_data_path and os.path.exists(resolved_eval_data_path):
         logger.info("Loading eval trajectories from %s", resolved_eval_data_path)
         return get_dataloader(
             cfg,
             data_path=resolved_eval_data_path,
             shuffle=False,
+            batch_size=eval_batch_size,
         )
 
     if resolved_eval_data_path:
@@ -399,6 +483,7 @@ def _build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None):
         cfg,
         num_samples=cfg.training.eval_batch_size,
         shuffle=False,
+        batch_size=eval_batch_size,
     )
 
 
@@ -466,18 +551,19 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
     # 2. Create model
     model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model)).to(device)
 
-    # 3. Optimizer
-    optimizer = build_optimizer(model, cfg)
+    # 3. Optimizer (weight decay restricted to decoder heads)
+    optimizer, decoder_params = build_optimizer(model, cfg)
 
     if getattr(cfg.training, "use_tqdm", True) and tqdm is None:
         logger.warning("tqdm is not installed; falling back to plain logs")
 
     # 4. GridScorer for evaluation
+    nbins = getattr(getattr(cfg, "visualization", None), "spatial_bins", 20)
     starts = [0.2] * 10
     ends = list(np.linspace(0.4, 1.0, num=10))
     masks_params = list(zip(starts, ends))
     scorer = GridScorer(
-        20,
+        nbins,
         [
             [-cfg.task.env_size / 2, cfg.task.env_size / 2],
             [-cfg.task.env_size / 2, cfg.task.env_size / 2],
@@ -504,6 +590,19 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
     )
 
     global_step = 0
+
+    # Pre-training evaluation (baseline before any weight updates)
+    _evaluate(
+        model,
+        pc_ens,
+        hdc_ens,
+        scorer,
+        _fixed_eval_loader,
+        cfg,
+        device,
+        epoch=0,
+        writer=writer,
+    )
 
     try:
         for epoch in range(cfg.training.epochs):
@@ -573,7 +672,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
 
                 loss.backward()
                 torch.nn.utils.clip_grad_value_(
-                    model.parameters(), cfg.training.grad_clip
+                    decoder_params, cfg.training.grad_clip
                 )
                 optimizer.step()
 
@@ -617,7 +716,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
                 writer.add_scalar("train/pos_mse_mean", epoch_pos_mse, epoch)
                 writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
 
-            if epoch % cfg.training.eval_every == 0:
+            if (epoch + 1) % cfg.training.eval_every == 0:
                 _evaluate(
                     model,
                     pc_ens,
@@ -626,7 +725,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
                     _fixed_eval_loader,
                     cfg,
                     device,
-                    epoch,
+                    epoch + 1,
                     writer=writer,
                 )
     finally:

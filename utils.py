@@ -7,6 +7,7 @@ PyTorch port of the original TensorFlow utility functions from:
 """
 
 from concurrent.futures import ProcessPoolExecutor
+import io
 import os
 from typing import List, Tuple
 
@@ -180,6 +181,60 @@ def compute_position_mse(
 # Scoring and plotting
 # ---------------------------------------------------------------------------
 
+def _render_page_to_png_bytes(args):
+    """Render one page of ratemaps + SACs to PNG bytes.
+
+    Layout matches the original: all ratemaps fill the top half of the figure
+    (subplot positions 1..rows*cols) and all SACs fill the bottom half
+    (positions rows*cols+1..2*rows*cols), using figsize=(24, rows*4).
+
+    Top-level so it can be pickled by ProcessPoolExecutor.
+    """
+    import io as _io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt
+    import numpy as _np
+
+    (ratemaps_page, sac_page, score_60_page, mask_60_page,
+     page_indices, rows, cols, cmap, dpi, nbins, plotting_sac_mask) = args
+
+    n_page = len(page_indices)
+    center = nbins - 1
+
+    fig = _plt.figure(figsize=(24, rows * 4))
+
+    for panel_idx in range(n_page):
+        index = page_indices[panel_idx]
+        title = "%d (%.2f)" % (int(index), score_60_page[panel_idx])
+
+        # Ratemap — top half
+        ax_rm = _plt.subplot(rows * 2, cols, panel_idx + 1)
+        ax_rm.imshow(ratemaps_page[panel_idx], interpolation="none", cmap=cmap)
+        ax_rm.axis("off")
+        ax_rm.set_title(title)
+
+        # SAC — bottom half
+        ax_sac = _plt.subplot(rows * 2, cols, rows * cols + panel_idx + 1)
+        useful_sac = sac_page[panel_idx] * plotting_sac_mask
+        ax_sac.imshow(useful_sac, interpolation="none", cmap=cmap)
+        mask_min, mask_max = mask_60_page[panel_idx]
+        ax_sac.add_artist(_plt.Circle(
+            (center, center), mask_min * nbins, fill=False, edgecolor="k",
+        ))
+        ax_sac.add_artist(_plt.Circle(
+            (center, center), mask_max * nbins, fill=False, edgecolor="k",
+        ))
+        ax_sac.axis("off")
+        ax_sac.set_title(title)
+
+    buf = _io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+    _plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
 def _score_ratemap_chunk(args):
     """Worker helper for scoring a chunk of rate maps."""
     scorer, ratemap_chunk = args
@@ -230,8 +285,14 @@ def get_scores_and_plot_from_ratemaps(
     num_workers: int = 0,
     chunk_size: int = 32,
     units_per_page: int = 128,
+    pdf_dpi: int = 72,
 ):
-    """Compute grid scores from precomputed rate maps and save a paginated PDF."""
+    """Compute grid scores from precomputed rate maps and save a paginated PDF.
+
+    Each page is rendered to PNG bytes (fast Agg rasteriser) and the pages are
+    assembled into a single PDF.  When num_workers > 1 the pages are rendered in
+    parallel, which is useful when there are many pages.
+    """
     ratemaps = np.asarray(ratemaps)
     n_units = ratemaps.shape[0]
     score_60, score_90, max_60_mask, max_90_mask, sac = score_ratemaps(
@@ -249,28 +310,46 @@ def get_scores_and_plot_from_ratemaps(
     units_per_page = max(1, units_per_page)
     cols = min(16, units_per_page)
 
+    # Build per-page argument tuples for the worker
+    page_args = []
+    for page_start in range(0, n_units, units_per_page):
+        page_indices = ordering[page_start : page_start + units_per_page]
+        n_page = len(page_indices)
+        rows = int(np.ceil(n_page / cols))
+        page_args.append((
+            ratemaps[page_indices],
+            sac[page_indices],
+            np.asarray(score_60)[page_indices],
+            [max_60_mask[i] for i in page_indices],
+            page_indices,
+            rows,
+            cols,
+            cm,
+            pdf_dpi,
+            scorer._nbins,
+            scorer._plotting_sac_mask,
+        ))
+
+    # Render pages — parallel when multiple workers are requested and there are
+    # multiple pages; otherwise render serially to avoid fork overhead.
+    n_pages = len(page_args)
+    if num_workers > 1 and n_pages > 1:
+        with ProcessPoolExecutor(max_workers=min(num_workers, n_pages)) as executor:
+            png_bytes_list = list(executor.map(_render_page_to_png_bytes, page_args))
+    else:
+        png_bytes_list = [_render_page_to_png_bytes(a) for a in page_args]
+
+    # Assemble PNG pages into a single PDF
     os.makedirs(directory, exist_ok=True)
     with PdfPages(os.path.join(directory, filename)) as pdf:
-        for page_start in range(0, n_units, units_per_page):
-            page_indices = ordering[page_start:page_start + units_per_page]
-            page_count = len(page_indices)
-            rows = int(np.ceil(page_count / cols))
-            fig = plt.figure(figsize=(24, rows * 4))
-
-            for panel_idx, index in enumerate(page_indices):
-                rf = plt.subplot(rows * 2, cols, panel_idx + 1)
-                acr = plt.subplot(rows * 2, cols, rows * cols + panel_idx + 1)
-                title = "%d (%.2f)" % (index, score_60[index])
-                scorer.plot_ratemap(ratemaps[index], ax=rf, title=title, cmap=cm)
-                scorer.plot_sac(
-                    sac[index],
-                    mask_params=max_60_mask[index],
-                    ax=acr,
-                    title=title,
-                    cmap=cm,
-                )
-
-            pdf.savefig(fig, bbox_inches="tight")
+        for png_bytes in png_bytes_list:
+            img = plt.imread(io.BytesIO(png_bytes))
+            h, w = img.shape[:2]
+            fig = plt.figure(figsize=(w / pdf_dpi, h / pdf_dpi), dpi=pdf_dpi)
+            ax = fig.add_axes([0, 0, 1, 1])
+            ax.imshow(img)
+            ax.axis("off")
+            pdf.savefig(fig, dpi=pdf_dpi)
             plt.close(fig)
 
     return (

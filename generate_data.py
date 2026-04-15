@@ -6,20 +6,14 @@ Usage
 # Generate default train/eval splits from config
 python generate_data.py
 
-# Visualize without saving
-python generate_data.py --output data/train.npz --visualize
+# Visualize
+python generate_data.py --visualize  --animate
 
 # Generate a smaller evaluation set only
-python generate_data.py --output data/eval.npz --num_samples 4000 --train_only
-
-# Export an MP4 animation of sample trajectories
-python generate_data.py --output data/train.npz --animate
-
-# Generate train/eval splits in one run
-python generate_data.py --output data/train.npz --eval_output data/eval.npz
+python generate_data.py --num_samples 4000 --train_only
 
 # Use a custom config
-python generate_data.py --config my_config.yaml --output data/train.npz
+python generate_data.py --config my_config.yaml
 """
 
 import argparse

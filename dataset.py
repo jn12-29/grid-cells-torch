@@ -396,6 +396,7 @@ def get_dataloader(
     hdc_ens=None,
     num_samples: int = None,
     shuffle: bool = True,
+    batch_size: int = None,
 ) -> DataLoader:
     """Build a DataLoader from a config object or a saved .npz file.
 
@@ -436,9 +437,10 @@ def get_dataloader(
         dataset.attach_ensembles(pc_ens, hdc_ens)
 
     num_workers = 4
+    resolved_batch_size = batch_size if batch_size is not None else cfg.training.batch_size
     return DataLoader(
         dataset,
-        batch_size=cfg.training.batch_size,
+        batch_size=resolved_batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,

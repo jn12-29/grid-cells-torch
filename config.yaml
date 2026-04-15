@@ -38,9 +38,12 @@ training:
   use_tqdm: true
   use_tensorboard: true
   tensorboard_log_every: 0
+  eval_loader_batch_size: 256
+  eval_plot_every: 1
   eval_num_workers: 4
   eval_chunk_size: 32
   eval_units_per_page: 128
+  eval_pdf_dpi: 100
 
 visualization:
   spatial_bins: 32

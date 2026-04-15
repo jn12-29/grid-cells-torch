@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.ndimage
 import scipy.signal
+import scipy.sparse
 import scipy.stats
 
 
@@ -112,11 +113,23 @@ class GridScorer(object):
             return
 
         flat_bins = x_idx * self._nbins + y_idx
-        np.add.at(counts.reshape(-1), flat_bins, 1)
+        n_valid = len(flat_bins)
+        n_bins_flat = self._nbins * self._nbins
 
+        # counts: fast bincount
+        counts_flat = counts.reshape(-1)
+        counts_flat += np.bincount(flat_bins, minlength=n_bins_flat).astype(counts_flat.dtype)
+
+        # sums: sparse one-hot matmul is ~40x faster than np.add.at for large N
+        # one_hot (N_valid, n_bins_flat) @ valid_act (N_valid, n_units)
+        # = (n_bins_flat, n_units) via one_hot.T @ valid_act
         valid_act = np.asarray(flat_act[valid], dtype=sums.dtype)
-        unit_indices = np.arange(valid_act.shape[1])[:, None]
-        np.add.at(sums.reshape(valid_act.shape[1], -1), (unit_indices, flat_bins[None, :]), valid_act.T)
+        one_hot = scipy.sparse.csr_matrix(
+            (np.ones(n_valid, dtype=sums.dtype), (np.arange(n_valid), flat_bins)),
+            shape=(n_valid, n_bins_flat),
+        )
+        sums_flat = sums.reshape(sums.shape[0], -1)
+        sums_flat += (one_hot.T @ valid_act).T
 
     def finalize_ratemaps(self, sums, counts):
         """Convert accumulated sums/counts into mean rate maps with NaNs for empty bins."""
@@ -234,13 +247,68 @@ class GridScorer(object):
             sac,
         )
 
+    def calculate_sac_batch(self, ratemaps):
+        """Vectorized SAC for an (N, H, W) batch via numpy rfft2.
+
+        Equivalent to calling calculate_sac() on each ratemap independently,
+        but uses batched FFT instead of N×6 serial convolve2d calls.
+
+        The original scalar implementation computes:
+            filter2(b, x) = convolve2d(x, rot90(b, 2), 'full')
+                          = correlate2d(x, b, 'full')
+        Via FFT:
+            correlate2d(x, b) = fftshift(irfft2(rfft2(x) * conj(rfft2(b))))
+        where fftshift is needed to place zero-lag at the center of the output
+        (index [H-1, W-1]) to match scipy's 'full' mode layout.
+        """
+        N, H, W = ratemaps.shape
+        seq = np.nan_to_num(ratemaps)  # NaN → 0, matching calculate_sac
+        # In calculate_sac, ones is built AFTER nan_to_num, so np.isnan(seq) is always
+        # False and ones is always all-ones — replicate that here.
+        ones = np.ones((N, H, W), dtype=seq.dtype)
+        seq_sq = seq ** 2
+
+        fft_shape = (2 * H - 1, 2 * W - 1)
+        Fs  = np.fft.rfft2(seq,    s=fft_shape, axes=(-2, -1))
+        Fo  = np.fft.rfft2(ones,   s=fft_shape, axes=(-2, -1))
+        Fss = np.fft.rfft2(seq_sq, s=fft_shape, axes=(-2, -1))
+
+        def corr(Fx, Fb):
+            """correlate2d(x, b) = fftshift(irfft2(rfft2(x) * conj(rfft2(b))))."""
+            return np.fft.fftshift(
+                np.fft.irfft2(Fx * np.conj(Fb), s=fft_shape, axes=(-2, -1)),
+                axes=(-2, -1),
+            )
+
+        # Map to filter2 calls in calculate_sac (seq1 == seq2 == seq):
+        # filter2(seq,     seq)     = correlate2d(seq,    seq)
+        # filter2(seq,     ones)    = correlate2d(ones,   seq)
+        # filter2(ones,    seq)     = correlate2d(seq,    ones)
+        # filter2(seq_sq,  ones)    = correlate2d(ones,   seq_sq)
+        # filter2(ones,    seq_sq)  = correlate2d(seq_sq, ones)
+        # filter2(ones,    ones)    = correlate2d(ones,   ones)
+        seq1_x_seq2 = corr(Fs,  Fs)
+        sum_seq1    = corr(Fo,  Fs)
+        sum_seq2    = corr(Fs,  Fo)
+        sum_seq1_sq = corr(Fo,  Fss)
+        sum_seq2_sq = corr(Fss, Fo)
+        n_bins      = corr(Fo,  Fo)
+        n_bins_sq   = n_bins ** 2
+
+        var1  = sum_seq1_sq / n_bins - sum_seq1 ** 2 / n_bins_sq
+        var2  = sum_seq2_sq / n_bins - sum_seq2 ** 2 / n_bins_sq
+        covar = seq1_x_seq2 / n_bins - sum_seq1 * sum_seq2 / n_bins_sq
+        denom = np.sqrt(np.maximum(var1, 0.0)) * np.sqrt(np.maximum(var2, 0.0)) + 1e-8
+        x_coef = covar / denom
+        return np.nan_to_num(np.real(x_coef))
+
     def get_scores_batch(self, ratemaps):
         """Score a chunk of rate maps with batched rotation and mask correlation."""
         ratemaps = np.asarray(ratemaps)
         if ratemaps.ndim == 2:
             ratemaps = ratemaps[np.newaxis, ...]
 
-        sacs = np.asarray([self.calculate_sac(ratemap) for ratemap in ratemaps])
+        sacs = self.calculate_sac_batch(ratemaps)
         rotated_sacs = self.rotated_sacs_batch(sacs, self._corr_angles)
 
         mask_stack = self._mask_stack[None, :, None, :, :]
