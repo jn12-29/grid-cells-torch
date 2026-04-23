@@ -10,8 +10,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from scores import GridScorer
-from utils import get_scores_and_plot_from_ratemaps, score_ratemaps
+from grid_cells.analysis.scores import GridScorer
+from grid_cells.analysis.scoring_utils import (
+    get_scores_and_plot_from_ratemaps,
+    score_ratemaps,
+)
 
 
 def make_scorer(nbins=8):

@@ -11,9 +11,9 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from dataset import TrajectoryDataset
-from ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
-from utils import (
+from grid_cells.data.dataset import TrajectoryDataset
+from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
+from grid_cells.cells.encoding_utils import (
     compute_position_mse,
     decode_position_from_pc_activations,
     decode_position_from_pc_logits,

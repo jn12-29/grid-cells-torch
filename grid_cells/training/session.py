@@ -16,16 +16,18 @@ from typing import Callable
 import numpy as np
 import torch
 
-from dataset import get_dataloader
-from model import GridCellsRNN
-from scores import GridScorer
-from utils import (
+from grid_cells.data.dataset import get_dataloader
+from grid_cells.cells.encoding_utils import (
     compute_position_mse,
     encode_initial_conditions,
     encode_targets,
+)
+from grid_cells.cells.ensemble_utils import (
     get_head_direction_ensembles,
     get_place_cell_ensembles,
 )
+from grid_cells.cells.model import GridCellsRNN
+from grid_cells.analysis.scores import GridScorer
 
 
 @dataclass

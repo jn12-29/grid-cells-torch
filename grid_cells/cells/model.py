@@ -5,7 +5,7 @@ codes seed an LSTM, velocity drives recurrent updates, and bottleneck features
 feed place-cell and head-direction-cell prediction heads.
 
 Usage:
-    from model import GridCellsRNN
+    from grid_cells.cells.model import GridCellsRNN
     model = GridCellsRNN(pc_ensembles, hdc_ensembles)
     pc_logits, hdc_logits, bottleneck, lstm_acts = model(init_cond, ego_vel)
 """

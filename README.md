@@ -43,6 +43,8 @@ Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
 
 This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, shared 3-panel MP4 animations, TensorBoard logging, a decoded-position metric (`pos_mse`), and a more complete CLI workflow for reproducible experiments.
 
+The codebase uses a hierarchical Python package rooted at `grid_cells/`. The root-level Python entrypoints are `train.py` and `generate_data.py`; library imports should target `grid_cells.*`.
+
 ## ⚡ Quick Start
 
 ```bash
@@ -55,11 +57,17 @@ sudo apt-get update && sudo apt-get install -y ffmpeg
 # macOS
 brew install ffmpeg
 
-# generate train/eval splits plus preview artifacts
+# generate a dataset directory under data/datasets/<dataset-id>/ plus preview artifacts
 python generate_data.py --visualize --animate
 
 # speed up preview videos by sampling every other step
-python generate_data.py --animate --anim_step 2
+python generate_data.py --animate --visualization.anim_step 2
+
+# override data-generation defaults from config.yaml
+python generate_data.py --data_generation.num_samples 5000 --task.seq_len 800
+
+# legacy single-file mode is still available with explicit output paths
+python generate_data.py --output data/train_small.npz --eval_output data/eval_small.npz
 
 # train with the generated dataset
 python train.py
@@ -76,11 +84,14 @@ tensorboard --logdir results
 
 Default convention:
 
-- Train split: `data/train.npz`
-- Eval split: `data/eval.npz`
+- Generated dataset directory: `data/datasets/<dataset-id>/`
+- Latest train entry for the default training flow: `data/latest/train.npz`
+- Latest eval entry for the default training flow: `data/latest/eval.npz`
 - Run directory: `results/<timestamp>/`
 
-If `data/train.npz` is missing, `train.py` falls back to on-the-fly trajectory generation.
+Directory mode updates `data/latest/train.npz` and `data/latest/eval.npz` after a successful generation run, and `train.py` now uses those stable entrypoints by default.
+
+If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly trajectory generation.
 
 ## 📦 Outputs
 
@@ -94,20 +105,18 @@ If `data/train.npz` is missing, `train.py` falls back to on-the-fly trajectory g
 
 ```text
 grid-cells-torch/
-├── docs/assets/readme/
 ├── config.yaml
 ├── generate_data.py
 ├── train.py
-├── model.py
-├── animation.py
-├── dataset.py
-├── encoding.py
-├── ensembles.py
-├── evaluation.py
-├── scores.py
-├── training_session.py
-├── trajectory_generation.py
-├── utils.py
+├── grid_cells/
+│   ├── common/
+│   ├── cells/
+│   ├── data/
+│   ├── training/
+│   ├── analysis/
+│   └── viz/
+├── tests/
+├── docs/assets/readme/
 └── results/
 ```
 
@@ -115,9 +124,21 @@ grid-cells-torch/
 <summary>🔍 More Details</summary>
 
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
-- `generate_data.py` can export `.npz`, PDF summaries, and the same 3-panel MP4 animation style used by eval outputs.
-- OOP-oriented orchestration now lives in dedicated modules: `encoding.py` centralizes ensemble encoding, `animation.py` owns trajectory rendering, `evaluation.py` owns eval/export flow, `training_session.py` owns the train loop, and `trajectory_generation.py` owns random-walk synthesis.
+- `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
+- `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata there, and updates `data/latest/*` for the default training path.
+- Legacy single-file generation is still available when you pass explicit `--output` / `--eval_output` paths.
+- Long-lived generation defaults live under `data_generation.*` in `config.yaml`, while one-shot run controls such as `--visualize`, `--animate`, `--train_only`, and `--visualize_progress` stay as CLI flags.
+- Layered package boundaries:
+  `grid_cells/common` owns shared config helpers.
+  `grid_cells/cells` owns ensembles, encoding, and model code.
+  `grid_cells/data` owns dataset IO, generation, previews, and trajectory synthesis.
+  `grid_cells/training` owns CLI parsing, runtime wiring, evaluation, and the training session.
+  `grid_cells/analysis` owns scoring and plotting helpers.
+  `grid_cells/viz` owns animation rendering.
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
+- Typical override examples:
+  `python train.py --task.env_size 2.4 --training.batch_size 32`
+  `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` prints a compact list of common train, generate, and TensorBoard commands.
 - The current default config is tuned for the expanded engineering workflow, not a line-by-line lockstep copy of the original hyperparameters.
 - README media is mirrored from selected run outputs into `docs/assets/readme/` so the landing page does not depend on ignored `results/` files.

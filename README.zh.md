@@ -43,6 +43,8 @@
 
 本仓库一开始严格对齐 DeepMind 官方 `grid-cells` 实现，并将核心训练流程迁移到 PyTorch。之后又加入了固定数据集生成、评估 PDF、HDC tuning 图、共用的 3-panel MP4 动画、TensorBoard、`pos_mse` 解码指标以及更完整的 CLI 工作流，更适合做可复现实验和后续分析。
 
+代码采用以 `grid_cells/` 为根的分层 Python 包结构。根目录提供 `train.py` 和 `generate_data.py` 两个 CLI 入口；库代码导入统一使用 `grid_cells.*` 路径。
+
 ## ⚡ 快速开始
 
 ```bash
@@ -55,32 +57,41 @@ sudo apt-get update && sudo apt-get install -y ffmpeg
 # macOS
 brew install ffmpeg
 
-# generate train/eval splits plus preview artifacts
+# 默认会生成一个数据集目录到 data/datasets/<dataset-id>/，并导出预览产物
 python generate_data.py --visualize --animate
 
-# speed up preview videos by sampling every other step
-python generate_data.py --animate --anim_step 2
+# 调大动画采样步长，缩短预览视频
+python generate_data.py --animate --visualization.anim_step 2
 
-# train with the generated dataset
+# 从 config.yaml 默认值出发做一次性覆盖
+python generate_data.py --data_generation.num_samples 5000 --task.seq_len 800
+
+# 显式指定输出路径时，仍可使用 legacy 单文件模式
+python generate_data.py --output data/train_small.npz --eval_output data/eval_small.npz
+
+# 训练默认读取 data/latest/train.npz 和 data/latest/eval.npz
 python train.py
 
-# or override the shared animation config for eval videos
+# 也可以覆盖评估视频共用的动画参数
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
-# or print the common command list
+# 或查看常用命令清单
 bash run_scripts.sh
 
-# inspect metrics
+# 查看指标
 tensorboard --logdir results
 ```
 
 默认约定：
 
-- 训练集：`data/train.npz`
-- 评估集：`data/eval.npz`
+- 默认生成目录：`data/datasets/<dataset-id>/`
+- 默认训练入口（最新 train）：`data/latest/train.npz`
+- 默认训练入口（最新 eval）：`data/latest/eval.npz`
 - 结果目录：`results/<timestamp>/`
 
-如果 `data/train.npz` 不存在，`train.py` 会回退到在线生成轨迹模式。
+目录模式成功生成后，会把最新的 `train.npz` / `eval.npz` 暴露到 `data/latest/`，供默认训练流程复用。
+
+如果 `data/latest/train.npz` 不存在，`train.py` 会回退到在线生成轨迹模式。
 
 ## 📦 输出内容
 
@@ -94,20 +105,18 @@ tensorboard --logdir results
 
 ```text
 grid-cells-torch/
-├── docs/assets/readme/
 ├── config.yaml
 ├── generate_data.py
 ├── train.py
-├── model.py
-├── animation.py
-├── dataset.py
-├── encoding.py
-├── ensembles.py
-├── evaluation.py
-├── scores.py
-├── training_session.py
-├── trajectory_generation.py
-├── utils.py
+├── grid_cells/
+│   ├── common/
+│   ├── cells/
+│   ├── data/
+│   ├── training/
+│   ├── analysis/
+│   └── viz/
+├── tests/
+├── docs/assets/readme/
 └── results/
 ```
 
@@ -115,9 +124,21 @@ grid-cells-torch/
 <summary>🔍 更多说明</summary>
 
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
-- `generate_data.py` 可以在同一工作流中导出 `.npz`、PDF 汇总，以及和 eval 输出同风格的 3-panel MP4 动画。
-- 面向对象的流程编排现在拆到了独立模块里：`encoding.py` 统一 ensemble 编码，`animation.py` 管理轨迹动画渲染，`evaluation.py` 管理评估与导出流程，`training_session.py` 管理训练主循环，`trajectory_generation.py` 管理随机游走轨迹生成。
+- `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
+- `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据，并同步 `data/latest/*` 作为训练默认入口。
+- 如果显式传入 `--output` / `--eval_output`，仍可走 legacy 单文件模式。
+- 长期复用的数据生成默认值放在 `config.yaml` 的 `data_generation.*` 下；`--visualize`、`--animate`、`--train_only`、`--visualize_progress` 这类一次性运行开关继续保留在 CLI。
+- 分层包边界如下：
+  `grid_cells/common` 管理共享配置辅助。
+  `grid_cells/cells` 管理 ensembles、encoding 和 model。
+  `grid_cells/data` 管理 dataset IO、数据生成、预览和轨迹合成。
+  `grid_cells/training` 管理 CLI 解析、runtime 装配、evaluation 和训练 session。
+  `grid_cells/analysis` 管理评分与绘图辅助。
+  `grid_cells/viz` 管理动画渲染。
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
+- 常见覆盖示例：
+  `python train.py --task.env_size 2.4 --training.batch_size 32`
+  `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` 会打印一份精简的常用训练、数据生成和 TensorBoard 命令清单。
 - 当前默认配置更偏向扩展后的工程化实验流程，而不是对原始超参数做逐行逐值锁定。
 - README 中使用的媒体资源会从选定运行结果镜像到 `docs/assets/readme/`，避免首页依赖被忽略的 `results/` 文件。

@@ -21,9 +21,9 @@ training:
   epochs: 1000
   steps_per_epoch: 1000
   batch_size: 10
-  data_path: "data/train.npz"
+  data_path: "data/latest/train.npz"
   eval_batch_size: 4000
-  eval_data_path: "data/eval.npz"
+  eval_data_path: "data/latest/eval.npz"
   optimizer: "adamw"
   lr: 1.0e-3
   momentum: 0.9
@@ -52,3 +52,13 @@ visualization:
   anim_fps: 20      # playback frame rate
   anim_step: 4      # render every N-th timestep (4 → 4× speed, 1000 steps → 250 frames)
   anim_workers: 4   # parallel workers for frame rendering when ffmpeg is available
+
+data_generation:
+  num_samples: null
+  eval_num_samples: null
+  num_workers: 8
+  progress_every: 4
+  vis_output: null
+  anim_output: null
+  progress_output: null
+  eval_progress_output: null

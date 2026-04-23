@@ -11,8 +11,8 @@ from torch.utils.data import RandomSampler, SequentialSampler
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from dataset import TrajectoryDataset, get_dataloader
-from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
+from grid_cells.data.dataset import TrajectoryDataset, get_dataloader
+from grid_cells.cells.ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from types import SimpleNamespace
 
 
@@ -93,7 +93,7 @@ def test_parallel_generation_matches_single_worker_output():
 
 def test_init_cond_consistent_with_manual_encode():
     """init_cond from dataset matches encode_initial_conditions output."""
-    from utils import encode_initial_conditions
+    from grid_cells.cells.encoding_utils import encode_initial_conditions
     ds = TrajectoryDataset(num_samples=5, seq_len=10, env_size=2.2, seed=1)
     pc_ens, hdc_ens = make_ensembles()
     ds.attach_ensembles(pc_ens, hdc_ens)

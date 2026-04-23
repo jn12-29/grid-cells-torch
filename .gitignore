@@ -1,5 +1,39 @@
+# Python bytecode and caches
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local data and experiment outputs
 data/
-docs/superpowers/
-test/
 results/
+logs/
+runs/
+outputs/
+checkpoints/
+
+# Local documentation artifacts
+# docs/superpowers/
+
+# Local tool state
+.DS_Store
+.idea/
+.vscode/
+.claude/settings.local.json
+
+# Legacy local test scratch dir
+test/
+
+# code tools
+.claude/
+.codex/

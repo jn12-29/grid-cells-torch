@@ -16,7 +16,7 @@ from typing import List
 import numpy as np
 import torch
 
-from ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
+from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
 
 
 def decode_position_from_pc_activations(

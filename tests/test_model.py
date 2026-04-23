@@ -8,8 +8,8 @@ import torch
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
-from model import GridCellsRNN
+from grid_cells.cells.ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
+from grid_cells.cells.model import GridCellsRNN
 
 
 def make_model(nh_lstm=16, nh_bottleneck=32, dropout_rate=0.0):

@@ -13,21 +13,27 @@ python generate_data.py
 python generate_data.py --visualize --animate
 
 3. Generate datasets with custom animation sampling
-python generate_data.py --animate --anim_num_traj 4 --anim_step 2
+python generate_data.py --animate --visualization.anim_num_traj 4 --visualization.anim_step 2
 
-4. Generate a smaller dataset
-python generate_data.py --output data/train_small.npz --num_samples 4000 --train_only
+4. Generate a smaller dataset directory
+python generate_data.py --data_generation.num_samples 4000 --train_only
+
+5. Generate datasets with config-backed defaults overridden from the CLI
+python generate_data.py --task.seq_len 800 --data_generation.num_workers 4 --visualization.anim_fps 30
+
+6. Legacy single-file generation with explicit output paths
+python generate_data.py --output data/train_small.npz --eval_output data/eval_small.npz
 
 Train
 
-5. Train with the default workflow
+7. Train with the default workflow (reads data/latest/train.npz and data/latest/eval.npz)
 CUDA_VISIBLE_DEVICES=0 python train.py
 
-6. Train with config overrides
+8. Train with config overrides
 CUDA_VISIBLE_DEVICES=0 python train.py --training.epochs 20 --training.eval_every 1 --visualization.anim_step 2
 
 Monitor
 
-7. Inspect metrics in TensorBoard
+9. Inspect metrics in TensorBoard
 tensorboard --logdir results
 EOF

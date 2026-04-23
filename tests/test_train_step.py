@@ -4,6 +4,7 @@ Usage:
     pytest tests/test_train_step.py
     pytest tests/test_train_step.py -k save_dir
 """
+import argparse
 import logging
 import os
 import numpy as np
@@ -15,17 +16,20 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import train as train_module
-from dataset import get_dataloader
-from ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
-from model import GridCellsRNN
+from grid_cells.data.dataset import get_dataloader
+from grid_cells.cells.ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
+from grid_cells.cells.model import GridCellsRNN
 from train import (
     _evaluate,
+    _apply_overrides,
     _build_eval_loader,
     _build_train_loader,
     build_optimizer,
     get_step_log_interval,
+    load_config,
     resolve_save_dir,
 )
+from grid_cells.training.cli import parse_train_args
 
 
 def make_cfg():
@@ -52,7 +56,7 @@ def make_cfg():
         training=SimpleNamespace(
             batch_size=4,
             steps_per_epoch=2,
-            data_path="data/train.npz",
+            data_path="data/latest/train.npz",
             optimizer="rmsprop",
             lr=1e-4,
             momentum=0.9,
@@ -179,6 +183,116 @@ def test_build_optimizer_can_switch_to_adamw():
     assert decoder_params
     assert optimizer.defaults["betas"] == (0.8, 0.95)
     assert optimizer.defaults["eps"] == 1e-6
+
+
+def test_load_config_returns_nested_namespace(tmp_path):
+    """YAML config loading should preserve nested attribute access."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "task:\n"
+        "  env_size: 2.2\n"
+        "training:\n"
+        "  epochs: 5\n"
+        "visualization:\n"
+        "  anim_fps: 24\n"
+    )
+
+    cfg = load_config(str(config_path))
+
+    assert cfg.task.env_size == 2.2
+    assert cfg.training.epochs == 5
+    assert cfg.visualization.anim_fps == 24
+
+
+def test_apply_overrides_updates_nested_sections_and_ignores_cli_paths():
+    """CLI overrides should mutate config sections without touching loader paths."""
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(env_size=2.2),
+        model=SimpleNamespace(dropout_rate=0.5),
+        training=SimpleNamespace(epochs=10),
+        visualization=SimpleNamespace(anim_step=4),
+        data_generation=SimpleNamespace(num_workers=8),
+    )
+    args = SimpleNamespace(
+        config="alt.yaml",
+        data_path="data/latest/train.npz",
+        eval_data_path="data/latest/eval.npz",
+        task__env_size=3.0,
+        model__dropout_rate=0.25,
+        training__epochs=20,
+        visualization__anim_step=2,
+        data_generation__num_workers=3,
+        training__lr=None,
+    )
+
+    updated = _apply_overrides(cfg, args)
+
+    assert updated is cfg
+    assert cfg.task.env_size == 3.0
+    assert cfg.model.dropout_rate == 0.25
+    assert cfg.training.epochs == 20
+    assert cfg.visualization.anim_step == 2
+    assert cfg.data_generation.num_workers == 3
+
+
+def test_register_config_overrides_supports_shared_sections():
+    """Shared config registration should expose section.key override args."""
+    from grid_cells.common.config_cli import register_config_overrides
+
+    parser = argparse.ArgumentParser()
+    register_config_overrides(
+        parser,
+        sections=("task", "model", "training", "visualization", "data_generation"),
+    )
+
+    args = parser.parse_args(
+        [
+            "--task.env_size",
+            "3.5",
+            "--model.nh_lstm",
+            "64",
+            "--training.batch_size",
+            "8",
+            "--visualization.anim_fps",
+            "30",
+            "--data_generation.num_workers",
+            "2",
+        ]
+    )
+
+    assert args.task__env_size == 3.5
+    assert args.model__nh_lstm == 64
+    assert args.training__batch_size == 8
+    assert args.visualization__anim_fps == 30
+    assert args.data_generation__num_workers == 2
+
+
+def test_parse_train_args_supports_task_model_training_and_visualization_overrides(
+    monkeypatch,
+):
+    """Train CLI should reuse the shared override syntax across core sections."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train.py",
+            "--task.env_size",
+            "2.8",
+            "--model.dropout_rate",
+            "0.25",
+            "--training.batch_size",
+            "16",
+            "--visualization.anim_step",
+            "2",
+        ],
+    )
+
+    args = parse_train_args()
+
+    assert args.task__env_size == 2.8
+    assert args.model__dropout_rate == 0.25
+    assert args.training__batch_size == 16
+    assert args.visualization__anim_step == 2
 
 
 def test_create_summary_writer_uses_tensorboard_subdir(monkeypatch):
