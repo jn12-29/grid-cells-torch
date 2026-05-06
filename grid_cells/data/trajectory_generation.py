@@ -16,11 +16,12 @@ import numpy as np
 
 def _generate_chunk_worker(task) -> tuple[int, dict]:
     """Generate one contiguous chunk of trajectories in a worker process."""
-    seq_len, env_size, velocity_noise, start_idx, sample_seeds = task
+    seq_len, env_size, velocity_noise, motion_params, start_idx, sample_seeds = task
     generator = TrajectoryGenerator(
         seq_len=seq_len,
         env_size=env_size,
         velocity_noise=velocity_noise,
+        **motion_params,
     )
     chunk_size = len(sample_seeds)
     chunk = generator.allocate_storage(chunk_size, seq_len)
@@ -45,10 +46,31 @@ class TrajectoryGenerator:
     _MW = 0.0
     _SW = 0.52 * np.pi
 
-    def __init__(self, seq_len: int, env_size: float, velocity_noise=(0.0, 0.0, 0.0)):
+    def __init__(
+        self,
+        seq_len: int,
+        env_size: float,
+        velocity_noise=(0.0, 0.0, 0.0),
+        *,
+        dt: float = None,
+        b: float = None,
+        mv: float = None,
+        sv: float = None,
+        mw: float = None,
+        sw: float = None,
+    ):
         self.seq_len = seq_len
         self.env_size = env_size
         self.velocity_noise = tuple(velocity_noise)
+        self.dt = self._DT if dt is None else float(dt)
+        self.b  = self._B  if b  is None else float(b)
+        self.mv = self._MV if mv is None else float(mv)
+        self.sv = self._SV if sv is None else float(sv)
+        self.mw = self._MW if mw is None else float(mw)
+        self.sw = self._SW if sw is None else float(sw)
+
+    def _motion_params(self) -> dict:
+        return {"dt": self.dt, "b": self.b, "mv": self.mv, "sv": self.sv, "mw": self.mw, "sw": self.sw}
 
     @staticmethod
     def allocate_storage(num_samples: int, seq_len: int) -> dict:
@@ -73,8 +95,8 @@ class TrajectoryGenerator:
     def generate_trajectory(self, rng: np.random.Generator) -> dict:
         """Generate a single trajectory and return float32 arrays."""
         total_steps = self.seq_len
-        dt = self._DT
-        decay = self._B
+        dt = self.dt
+        decay = self.b
         half = self.env_size / 2.0
 
         init_pos = rng.uniform(-half, half, size=(2,)).astype(np.float32)
@@ -89,13 +111,13 @@ class TrajectoryGenerator:
 
         for step in range(total_steps):
             angular_velocity = (1.0 - decay) * angular_velocity + decay * rng.normal(
-                self._MW,
-                self._SW,
+                self.mw,
+                self.sw,
             )
 
-            speed = rng.normal(self._MV, self._SV)
+            speed = rng.normal(self.mv, self.sv)
             while speed <= 0.0:
-                speed = rng.normal(self._MV, self._SV)
+                speed = rng.normal(self.mv, self.sv)
 
             hd = hd + angular_velocity * dt
             hd = (hd + np.pi) % (2.0 * np.pi) - np.pi
@@ -159,6 +181,7 @@ class TrajectoryGenerator:
         storage = self.allocate_storage(num_samples, self.seq_len)
         sample_seeds = self.build_sample_seeds(base_seed, num_samples)
         tasks = []
+        motion_params = self._motion_params()
         for start_idx in range(0, num_samples, chunk_size):
             end_idx = min(start_idx + chunk_size, num_samples)
             tasks.append(
@@ -166,6 +189,7 @@ class TrajectoryGenerator:
                     self.seq_len,
                     self.env_size,
                     self.velocity_noise,
+                    motion_params,
                     start_idx,
                     sample_seeds[start_idx:end_idx],
                 )

@@ -35,15 +35,17 @@ class TrajectoryDataset(Dataset):
         velocity_noise:  Tuple/list (σx, σy, σω) of Gaussian noise std devs
                          added to ego_vel components.  Pass (0,0,0) to disable.
         seed:            Optional integer seed for reproducibility.
+        dt, b, mv, sv, mw, sw: Motion model parameters (see TrajectoryGenerator).
+                         None = use TrajectoryGenerator defaults.
     """
 
-    # Motion model constants (Sargolini 2006 / Milford 2010 rodent motion model)
-    _DT = TrajectoryGenerator._DT   # time step, seconds
-    _B = TrajectoryGenerator._B     # angular velocity decay coefficient (OU process)
-    _MV = TrajectoryGenerator._MV   # mean translational speed  (m/s, ~10 cm/s)
-    _SV = TrajectoryGenerator._SV   # std  translational speed   (m/s)
-    _MW = TrajectoryGenerator._MW   # mean angular velocity      (rad/s)
-    _SW = TrajectoryGenerator._SW   # std angular velocity ~94 deg/s (~1.63 rad/s)
+    # Motion model defaults kept as class aliases for backward-compatible access.
+    _DT = TrajectoryGenerator._DT
+    _B = TrajectoryGenerator._B
+    _MV = TrajectoryGenerator._MV
+    _SV = TrajectoryGenerator._SV
+    _MW = TrajectoryGenerator._MW
+    _SW = TrajectoryGenerator._SW
 
     def __init__(
         self,
@@ -55,6 +57,12 @@ class TrajectoryDataset(Dataset):
         num_workers: int = 1,
         chunk_size: int = None,
         progress_callback=None,
+        dt: float = None,
+        b: float = None,
+        mv: float = None,
+        sv: float = None,
+        mw: float = None,
+        sw: float = None,
     ):
         self.num_samples = num_samples
         self.seq_len = seq_len
@@ -64,6 +72,7 @@ class TrajectoryDataset(Dataset):
             seq_len=self.seq_len,
             env_size=self.env_size,
             velocity_noise=self.velocity_noise,
+            dt=dt, b=b, mv=mv, sv=sv, mw=mw, sw=sw,
         )
 
         self._data = self._generate_all(
@@ -161,10 +170,11 @@ class TrajectoryDataset(Dataset):
         import os
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         meta = json.dumps({
-            "env_size":      self.env_size,
-            "seq_len":       self.seq_len,
+            "env_size":       self.env_size,
+            "seq_len":        self.seq_len,
             "velocity_noise": list(self.velocity_noise),
-            "num_samples":   self.num_samples,
+            "num_samples":    self.num_samples,
+            "motion":         self._generator._motion_params(),
         })
         np.savez_compressed(
             path,
@@ -197,10 +207,12 @@ class TrajectoryDataset(Dataset):
         obj.seq_len        = meta["seq_len"]
         obj.env_size       = meta["env_size"]
         obj.velocity_noise = tuple(meta["velocity_noise"])
+        motion = meta.get("motion", {})  # absent in files saved before motion params were added
         obj._generator = TrajectoryGenerator(
             seq_len=obj.seq_len,
             env_size=obj.env_size,
             velocity_noise=obj.velocity_noise,
+            **motion,
         )
         obj._data = {
             "init_pos":   data["init_pos"],

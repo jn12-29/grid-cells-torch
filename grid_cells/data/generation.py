@@ -14,6 +14,7 @@ def generate_dataset_file(
     velocity_noise,
     seed: int,
     *,
+    motion_params: dict = None,
     visualize_fn,
     visualize_animation_fn=None,
     pc_ensembles=None,
@@ -54,6 +55,7 @@ def generate_dataset_file(
             seed=seed,
             num_workers=num_workers,
             progress_callback=monitor.update,
+            **(motion_params or {}),
         )
     finally:
         monitor.finalize()

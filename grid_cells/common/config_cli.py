@@ -13,6 +13,12 @@ CONFIG_OVERRIDE_SPECS = {
         "seq_len": {"type": int},
         "neurons_seed": {"type": int},
         "velocity_noise": {"type": float, "nargs": "+"},
+        "motion_dt": {"type": float},
+        "motion_b":  {"type": float},
+        "motion_mv": {"type": float},
+        "motion_sv": {"type": float},
+        "motion_mw": {"type": float},
+        "motion_sw": {"type": float},
     },
     "model": {
         "nh_lstm": {"type": int},

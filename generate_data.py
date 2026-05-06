@@ -225,6 +225,7 @@ def generate_dataset_file(
     progress_every: int = 4,
     spatial_bins: int = DEFAULT_SPATIAL_BINS,
     directional_bins: int = DEFAULT_DIRECTIONAL_BINS,
+    motion_params: dict = None,
 ) -> TrajectoryDataset:
     """Generate one dataset file and optionally emit its visualization artifacts."""
     if spatial_bins is None:
@@ -238,6 +239,7 @@ def generate_dataset_file(
         env_size=env_size,
         velocity_noise=velocity_noise,
         seed=seed,
+        motion_params=motion_params,
         visualize_fn=visualize,
         visualize_animation_fn=visualize_animation,
         pc_ensembles=pc_ensembles,
@@ -254,6 +256,17 @@ def generate_dataset_file(
         spatial_bins=spatial_bins,
         directional_bins=directional_bins,
     )
+
+
+def _motion_params_from_cfg(cfg_task) -> dict:
+    return {
+        "dt": cfg_task.motion_dt,
+        "b":  cfg_task.motion_b,
+        "mv": cfg_task.motion_mv,
+        "sv": cfg_task.motion_sv,
+        "mw": cfg_task.motion_mw,
+        "sw": cfg_task.motion_sw,
+    }
 
 
 def _default_artifact_path(base_path: str, suffix: str) -> str:
@@ -344,6 +357,7 @@ def _build_dataset_metadata(
     seed: int,
     eval_seed: int | None,
     velocity_noise,
+    motion_params: dict,
     num_samples: int,
     eval_num_samples: int | None,
     paths: dict,
@@ -356,6 +370,7 @@ def _build_dataset_metadata(
             "env_size": float(env_size),
             "neurons_seed": int(seed),
             "velocity_noise": list(velocity_noise),
+            "motion": motion_params,
         },
         "generation": {
             "train_seed": int(seed),
@@ -561,6 +576,8 @@ def main() -> None:
             args,
         )
 
+    motion_params = _motion_params_from_cfg(cfg.task)
+
     if output_path is not None:
         generate_dataset_file(
             output_path=output_path,
@@ -569,6 +586,7 @@ def main() -> None:
             env_size=env_size,
             velocity_noise=cfg.task.velocity_noise,
             seed=seed,
+            motion_params=motion_params,
             pc_ensembles=pc_ensembles,
             hdc_ensembles=hdc_ensembles,
             visualize_output=vis_path,
@@ -604,6 +622,7 @@ def main() -> None:
                 seed=seed,
                 eval_seed=None,
                 velocity_noise=cfg.task.velocity_noise,
+                motion_params=motion_params,
                 num_samples=num_samples,
                 eval_num_samples=None,
                 paths=metadata_paths,
@@ -638,6 +657,7 @@ def main() -> None:
         env_size=env_size,
         velocity_noise=cfg.task.velocity_noise,
         seed=eval_seed,
+        motion_params=motion_params,
         pc_ensembles=pc_ensembles,
         hdc_ensembles=hdc_ensembles,
         num_workers=(
@@ -666,6 +686,7 @@ def main() -> None:
             seed=seed,
             eval_seed=eval_seed,
             velocity_noise=cfg.task.velocity_noise,
+            motion_params=motion_params,
             num_samples=num_samples,
             eval_num_samples=eval_num_samples,
             paths=metadata_paths,
