@@ -25,9 +25,10 @@ model:
   init_weight_disp: 0.0        # mean displacement for output-head weight uniform init (0 = default init)
 
 training:
-  epochs: 1000
+  epochs: 200
   steps_per_epoch: 1000
   batch_size: 10
+  datadir: "data/latest"
   data_path: "data/latest/train.npz"
   eval_batch_size: 4000         # number of trajectories in the fixed in-memory eval set when no eval file is loaded
   eval_data_path: "data/latest/eval.npz"

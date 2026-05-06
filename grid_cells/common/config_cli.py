@@ -31,6 +31,7 @@ CONFIG_OVERRIDE_SPECS = {
         "epochs": {"type": int},
         "steps_per_epoch": {"type": int},
         "batch_size": {"type": int},
+        "datadir": {"type": str},
         "data_path": {"type": str},
         "eval_batch_size": {"type": int},
         "eval_data_path": {"type": str},

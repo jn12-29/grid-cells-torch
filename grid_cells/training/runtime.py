@@ -110,6 +110,20 @@ def build_optimizer(model, cfg):
     raise ValueError(f"Unsupported optimizer: {cfg.training.optimizer}")
 
 
+def _resolve_split_path(cfg, explicit_path: str, split_name: str, fallback_attr: str) -> str:
+    """Resolve a train/eval split path, preferring configured dataset directories."""
+    if explicit_path:
+        return explicit_path
+
+    datadir = getattr(cfg.training, "datadir", None)
+    if datadir:
+        split_path = os.path.join(datadir, f"{split_name}.npz")
+        if os.path.exists(split_path):
+            return split_path
+
+    return getattr(cfg.training, fallback_attr, None)
+
+
 def resolve_animation_setting(cfg, name: str, default):
     """Resolve unified animation config, with fallback to legacy eval keys."""
     vis_cfg = getattr(cfg, "visualization", None)
@@ -131,9 +145,12 @@ def resolve_animation_setting(cfg, name: str, default):
 def build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None, get_dataloader_fn=None):
     """Build one fixed evaluation loader, preferring a configured dataset file."""
     get_dataloader_fn = get_dataloader_fn or get_dataloader
-    resolved_eval_data_path = eval_data_path
-    if resolved_eval_data_path is None:
-        resolved_eval_data_path = getattr(cfg.training, "eval_data_path", None)
+    resolved_eval_data_path = _resolve_split_path(
+        cfg,
+        eval_data_path,
+        split_name="eval",
+        fallback_attr="eval_data_path",
+    )
 
     eval_batch_size = getattr(
         cfg.training,
@@ -180,9 +197,12 @@ def build_train_loader(
 ):
     """Build one fixed training loader, preferring a configured dataset file."""
     get_dataloader_fn = get_dataloader_fn or get_dataloader
-    resolved_data_path = data_path
-    if resolved_data_path is None:
-        resolved_data_path = getattr(cfg.training, "data_path", None)
+    resolved_data_path = _resolve_split_path(
+        cfg,
+        data_path,
+        split_name="train",
+        fallback_attr="data_path",
+    )
 
     if resolved_data_path and os.path.exists(resolved_data_path):
         logger.info("Loading trajectories from %s", resolved_data_path)

@@ -56,6 +56,7 @@ def make_cfg():
         training=SimpleNamespace(
             batch_size=4,
             steps_per_epoch=2,
+            datadir="data/latest",
             data_path="data/latest/train.npz",
             optimizer="rmsprop",
             lr=1e-4,
@@ -253,6 +254,8 @@ def test_register_config_overrides_supports_shared_sections():
             "64",
             "--training.batch_size",
             "8",
+            "--training.datadir",
+            "data/custom",
             "--visualization.anim_fps",
             "30",
             "--data_generation.num_workers",
@@ -263,6 +266,7 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.task__env_size == 3.5
     assert args.model__nh_lstm == 64
     assert args.training__batch_size == 8
+    assert args.training__datadir == "data/custom"
     assert args.visualization__anim_fps == 30
     assert args.data_generation__num_workers == 2
 
@@ -282,6 +286,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "0.25",
             "--training.batch_size",
             "16",
+            "--training.datadir",
+            "data/custom",
             "--visualization.anim_step",
             "2",
         ],
@@ -292,6 +298,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.task__env_size == 2.8
     assert args.model__dropout_rate == 0.25
     assert args.training__batch_size == 16
+    assert args.training__datadir == "data/custom"
     assert args.visualization__anim_step == 2
 
 
@@ -323,6 +330,7 @@ def test_create_summary_writer_uses_tensorboard_subdir(monkeypatch):
 def test_build_eval_loader_prefers_configured_eval_data_path(tmp_path, monkeypatch):
     """Eval loading should reuse the configured eval split when the file exists."""
     cfg = make_cfg()
+    cfg.training.datadir = None
     cfg.training.eval_batch_size = 7
     cfg.training.eval_data_path = str(tmp_path / "eval.npz")
     cfg.training.batch_size = 4
@@ -347,9 +355,64 @@ def test_build_eval_loader_prefers_configured_eval_data_path(tmp_path, monkeypat
     }
 
 
+def test_build_eval_loader_prefers_datadir_split(tmp_path, monkeypatch):
+    """Eval loading should prefer <datadir>/eval.npz over legacy eval_data_path."""
+    cfg = make_cfg()
+    cfg.training.eval_batch_size = 7
+    cfg.training.eval_data_path = "data/legacy-eval.npz"
+    cfg.training.datadir = str(tmp_path)
+    calls = {}
+
+    datadir_path = tmp_path / "eval.npz"
+    datadir_path.write_bytes(b"placeholder")
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "eval-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_eval_loader(cfg, logging.getLogger("test_eval_datadir"))
+
+    assert loader == "eval-loader"
+    assert calls["kwargs"] == {
+        "data_path": str(datadir_path),
+        "shuffle": False,
+        "batch_size": 4,
+    }
+
+
+def test_build_eval_loader_explicit_path_overrides_datadir(tmp_path, monkeypatch):
+    """Explicit eval_data_path should take precedence over training.datadir."""
+    cfg = make_cfg()
+    cfg.training.eval_batch_size = 7
+    cfg.training.datadir = str(tmp_path)
+    explicit_path = tmp_path / "explicit-eval.npz"
+    datadir_path = tmp_path / "eval.npz"
+    explicit_path.write_bytes(b"placeholder")
+    datadir_path.write_bytes(b"placeholder")
+    calls = {}
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "eval-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_eval_loader(
+        cfg,
+        logging.getLogger("test_eval_explicit_datadir"),
+        eval_data_path=str(explicit_path),
+    )
+
+    assert loader == "eval-loader"
+    assert calls["kwargs"]["data_path"] == str(explicit_path)
+
+
 def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
     """Missing eval files should fall back to one fixed generated eval dataset."""
     cfg = make_cfg()
+    cfg.training.datadir = None
     cfg.training.eval_batch_size = 7
     cfg.training.eval_data_path = "data/missing-eval.npz"
     calls = {}
@@ -369,6 +432,7 @@ def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
 def test_build_train_loader_prefers_configured_data_path(tmp_path, monkeypatch):
     """Training should reuse the configured train split when the file exists."""
     cfg = make_cfg()
+    cfg.training.datadir = None
     cfg.training.data_path = str(tmp_path / "train.npz")
     calls = {}
 
@@ -396,9 +460,69 @@ def test_build_train_loader_prefers_configured_data_path(tmp_path, monkeypatch):
     }
 
 
+def test_build_train_loader_prefers_datadir_split(tmp_path, monkeypatch):
+    """Training should prefer <datadir>/train.npz over legacy data_path."""
+    cfg = make_cfg()
+    cfg.training.data_path = "data/legacy-train.npz"
+    cfg.training.datadir = str(tmp_path)
+    calls = {}
+
+    datadir_path = tmp_path / "train.npz"
+    datadir_path.write_bytes(b"placeholder")
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "train-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_train_loader(
+        cfg,
+        logging.getLogger("test_train_loader_datadir"),
+        pc_ens="pc",
+        hdc_ens="hdc",
+    )
+
+    assert loader == "train-loader"
+    assert calls["kwargs"] == {
+        "data_path": str(datadir_path),
+        "pc_ens": "pc",
+        "hdc_ens": "hdc",
+    }
+
+
+def test_build_train_loader_explicit_path_overrides_datadir(tmp_path, monkeypatch):
+    """Explicit data_path should take precedence over training.datadir."""
+    cfg = make_cfg()
+    cfg.training.datadir = str(tmp_path)
+    explicit_path = tmp_path / "explicit-train.npz"
+    datadir_path = tmp_path / "train.npz"
+    explicit_path.write_bytes(b"placeholder")
+    datadir_path.write_bytes(b"placeholder")
+    calls = {}
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "train-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_train_loader(
+        cfg,
+        logging.getLogger("test_train_loader_explicit_datadir"),
+        pc_ens="pc",
+        hdc_ens="hdc",
+        data_path=str(explicit_path),
+    )
+
+    assert loader == "train-loader"
+    assert calls["kwargs"]["data_path"] == str(explicit_path)
+
+
 def test_build_train_loader_falls_back_when_data_path_missing(monkeypatch):
     """Missing train files should keep the original on-the-fly training mode."""
     cfg = make_cfg()
+    cfg.training.datadir = None
     cfg.training.data_path = "data/missing-train.npz"
 
     def fail_get_dataloader(*args, **kwargs):
