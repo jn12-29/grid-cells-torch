@@ -1,64 +1,65 @@
 task:
-  env_size: 2.2 # environment size in meters
-  n_pc: [256] # list of place cell counts
-  pc_scale: [0.01] # place cell standard deviation (meters)
-  n_hdc: [12] # head direction cell count
-  hdc_concentration: [20.0] # Von Mises concentration parameter
-  seq_len: 1000 # trajectory sequence length
-  neurons_seed: 8341 # random seed (matches original)
-  targets_type: "softmax"
-  lstm_init_type: "softmax"
-  velocity_noise: [0.0, 0.0, 0.0]
+  env_size: 2.2          # environment size in meters
+  n_pc: [256]            # list of place cell counts (one ensemble per entry)
+  pc_scale: [0.01]       # place cell Gaussian std dev in meters (one value per ensemble)
+  n_hdc: [12]            # head direction cell count (one ensemble per entry)
+  hdc_concentration: [20.0]  # Von Mises concentration κ (higher = narrower tuning)
+  seq_len: 1000          # trajectory sequence length (timesteps per sample)
+  neurons_seed: 8341     # RNG seed for cell center placement (matches original paper)
+  targets_type: "softmax"    # training-target encoding: "softmax"/"voronoi"/"sample"/"normalized"
+  lstm_init_type: "softmax"  # LSTM initial-state encoding: same options as targets_type, or "zeros"
+  velocity_noise: [0.0, 0.0, 0.0]  # Gaussian noise std devs (σvx, σvy, σω) added to input velocities
 
 model:
-  nh_lstm: 128
-  nh_bottleneck: 256
-  dropout_rate: 0.5
-  bottleneck_has_bias: false
-  init_weight_disp: 0.0
+  nh_lstm: 128           # LSTM hidden size
+  nh_bottleneck: 256     # bottleneck layer size (grid-cell representation dimension)
+  dropout_rate: 0.5      # dropout probability applied after the bottleneck
+  bottleneck_has_bias: false   # whether the bottleneck linear layer includes a bias term
+  init_weight_disp: 0.0        # mean displacement for output-head weight uniform init (0 = default init)
 
 training:
   epochs: 1000
   steps_per_epoch: 1000
   batch_size: 10
   data_path: "data/latest/train.npz"
-  eval_batch_size: 4000
+  eval_batch_size: 4000         # number of trajectories used when computing eval loss/metrics
   eval_data_path: "data/latest/eval.npz"
-  optimizer: "adamw"
+  optimizer: "adamw"            # "adamw" or "sgd"
   lr: 1.0e-3
-  momentum: 0.9
-  adamw_betas: [0.9, 0.999]
-  adamw_eps: 1.0e-8
+  momentum: 0.9                 # momentum coefficient (only used when optimizer is "sgd")
+  adamw_betas: [0.9, 0.999]    # Adam β1 (gradient) and β2 (squared-gradient) decay rates
+  adamw_eps: 1.0e-8            # Adam ε for numerical stability in denominator
   weight_decay: 1.0e-5
-  grad_clip: 1.0e-3
-  eval_every: 10
+  grad_clip: 1.0e-3            # gradient clipping max norm
+  eval_every: 10               # run evaluation every N epochs
+  num_workers: 4               # DataLoader worker processes for training data loading
   save_dir: "./results"
-  run_name: null
-  timestamp_save_dir: true
+  run_name: null               # optional name suffix appended to the timestamped run directory
+  timestamp_save_dir: true     # prefix run directory with a timestamp; set false to reuse a fixed path
   use_tqdm: true
   use_tensorboard: true
-  tensorboard_log_every: 0
-  eval_loader_batch_size: 256
-  eval_plot_every: 1
-  eval_num_workers: 4
-  eval_chunk_size: 32
-  eval_units_per_page: 128
-  eval_pdf_dpi: 100
+  tensorboard_log_every: 0     # log scalar metrics every N steps; 0 = auto (derived from hooks)
+  eval_loader_batch_size: 256  # DataLoader batch size for chunked eval inference (controls memory)
+  eval_plot_every: 1           # generate rate-map PDFs every N eval runs (1 = every eval)
+  eval_num_workers: 4          # DataLoader worker processes for eval data loading
+  eval_chunk_size: 32          # sequences per forward pass during eval (smaller = less GPU memory)
+  eval_units_per_page: 128     # neurons shown per page in the rate-map PDF
+  eval_pdf_dpi: 100            # DPI for exported rate-map PDF pages
 
 visualization:
-  spatial_bins: 32
-  directional_bins: 20
-  anim_num_traj: 4  # trajectories to animate in eval outputs and generate_data previews
-  anim_fps: 20      # playback frame rate
-  anim_step: 4      # render every N-th timestep (4 → 4× speed, 1000 steps → 250 frames)
-  anim_workers: 4   # parallel workers for frame rendering when ffmpeg is available
+  spatial_bins: 32        # grid resolution (bins per side) for spatial firing rate maps
+  directional_bins: 20    # number of direction bins for head-direction tuning curves
+  anim_num_traj: 4        # trajectories to animate in eval outputs and generate_data previews
+  anim_fps: 20            # playback frame rate
+  anim_step: 4            # render every N-th timestep (4 → 4× speed, 1000 steps → 250 frames)
+  anim_workers: 4         # parallel workers for frame rendering when ffmpeg is available
 
 data_generation:
-  num_samples: null
-  eval_num_samples: null
-  num_workers: 8
-  progress_every: 4
-  vis_output: null
-  anim_output: null
-  progress_output: null
-  eval_progress_output: null
+  num_samples: null          # training trajectories to generate; null = steps_per_epoch × batch_size
+  eval_num_samples: null     # eval trajectories to generate; null = same as num_samples
+  num_workers: 8             # parallel worker processes for trajectory generation
+  progress_every: 4          # print generation progress every N worker batches
+  vis_output: null           # train trajectory preview PDF path; null = auto under output dir
+  anim_output: null          # train trajectory animation MP4 path; null = auto
+  progress_output: null      # train generation progress plot path; null = auto
+  eval_progress_output: null # eval generation progress plot path; null = auto

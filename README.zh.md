@@ -51,11 +51,8 @@
 pip install torch numpy scipy matplotlib pyyaml tqdm tensorboard
 
 # 如果需要导出 MP4，请先安装 ffmpeg
-# Ubuntu / Debian
-sudo apt-get update && sudo apt-get install -y ffmpeg
 
-# macOS
-brew install ffmpeg
+sudo apt-get update && sudo apt-get install -y ffmpeg
 
 # 默认会生成一个数据集目录到 data/datasets/<dataset-id>/，并导出预览产物
 python generate_data.py --visualize --animate
@@ -147,4 +144,4 @@ grid-cells-torch/
 
 ## 🙏 致谢
 
-本项目的主要开发工作在很大程度上依赖 Claude Code（Claude Sonnet 4.6）和 OpenCode（GPT-5.4）的协助。整体开发大约用时一天，累计使用四个 Claude Code Pro session 和两个 GPT Plus session，迭代节奏非常快。
+本项目的主要开发工作在很大程度上依赖 Claude Code和 OpenCode 的协助。

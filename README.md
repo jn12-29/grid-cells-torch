@@ -51,11 +51,7 @@ The codebase uses a hierarchical Python package rooted at `grid_cells/`. The roo
 pip install torch numpy scipy matplotlib pyyaml tqdm tensorboard
 
 # install ffmpeg if you want MP4 outputs
-# Ubuntu / Debian
 sudo apt-get update && sudo apt-get install -y ffmpeg
-
-# macOS
-brew install ffmpeg
 
 # generate a dataset directory under data/datasets/<dataset-id>/ plus preview artifacts
 python generate_data.py --visualize --animate
@@ -147,4 +143,4 @@ grid-cells-torch/
 
 ## 🙏 Acknowledgements
 
-This project was developed with substantial help from Claude Code (Claude Sonnet 4.6) and OpenCode (GPT-5.4). The main development work took about one day and used four Claude Code Pro sessions plus two GPT Plus sessions, with a notably fast iteration cycle.
+This project was developed with substantial help from Claude Code and OpenCode. 

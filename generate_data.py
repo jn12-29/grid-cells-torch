@@ -455,13 +455,6 @@ def main() -> None:
     output_path = None
     eval_output_path = None
 
-    if eval_output_path is not None and os.path.abspath(eval_output_path) == os.path.abspath(
-        output_path
-    ):
-        raise ValueError(
-            "Train and eval output paths must be different. Use --train_only to "
-            "generate a single split."
-        )
 
     data_generation_cfg = getattr(cfg, "data_generation", SimpleNamespace())
     num_samples = (

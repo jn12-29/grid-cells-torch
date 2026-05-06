@@ -36,6 +36,7 @@ CONFIG_OVERRIDE_SPECS = {
         "weight_decay": {"type": float},
         "grad_clip": {"type": float},
         "eval_every": {"type": int},
+        "num_workers": {"type": int},
         "save_dir": {"type": str},
         "run_name": {"type": str},
         "timestamp_save_dir": {"type": str2bool},
