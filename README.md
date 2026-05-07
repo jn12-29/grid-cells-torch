@@ -89,9 +89,10 @@ Default convention:
 - Generated dataset directory: `data/datasets/<dataset-id>/`
 - Latest train entry for the default training flow: `data/latest/train.npz`
 - Latest eval entry for the default training flow: `data/latest/eval.npz`
+- Latest fixed cell centers: `data/latest/cells.npz`
 - Run directory: `results/<timestamp>/`
 
-Directory mode updates `data/latest/train.npz` and `data/latest/eval.npz` after a successful generation run, and `train.py` now uses `training.datadir` (`data/latest` by default) to find those stable split files first.
+Directory mode updates `data/latest/train.npz`, `data/latest/eval.npz`, and `data/latest/cells.npz` after a successful generation run. `train.py` uses `training.datadir` (`data/latest` by default) to find stable split files and fixed cell centers first.
 
 If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly trajectory generation.
 
@@ -128,8 +129,9 @@ grid-cells-torch/
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - Learning-rate scheduling is disabled by default with `training.lr_scheduler: "none"`; enable it with `--training.lr_scheduler cosine` or `--training.lr_scheduler step`.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
-- `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata there, and updates `data/latest/*` for the default training path.
-- `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz` and `<datadir>/eval.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.
+- `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
+- `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz`, `<datadir>/eval.npz`, and `<datadir>/cells.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.
+- `task.cells_path` can explicitly point to a fixed `cells.npz`; otherwise training auto-loads `<training.datadir>/cells.npz` when it exists.
 - Legacy single-file generation is still available when you pass explicit `--output` / `--eval_output` paths.
 - Long-lived generation defaults live under `data_generation.*` in `config.yaml`, while one-shot run controls such as `--visualize`, `--animate`, `--train_only`, and `--visualize_progress` stay as CLI flags.
 - Layered package boundaries:

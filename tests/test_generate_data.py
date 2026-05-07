@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import generate_data
 from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
+from grid_cells.data.trajectory_generation import TrajectoryGenerator
 
 
 def _make_cfg(train_path: str, eval_path: str = None):
@@ -23,6 +24,7 @@ def _make_cfg(train_path: str, eval_path: str = None):
         task=SimpleNamespace(
             seq_len=6,
             env_size=2.2,
+            cells_path=None,
             neurons_seed=5,
             velocity_noise=[0.0, 0.0, 0.0],
             targets_type="softmax",
@@ -31,6 +33,12 @@ def _make_cfg(train_path: str, eval_path: str = None):
             pc_scale=[0.35],
             n_hdc=[6],
             hdc_concentration=[20.0],
+            motion_dt=TrajectoryGenerator._DT,
+            motion_b=TrajectoryGenerator._B,
+            motion_mv=TrajectoryGenerator._MV,
+            motion_sv=TrajectoryGenerator._SV,
+            motion_mw=TrajectoryGenerator._MW,
+            motion_sw=TrajectoryGenerator._SW,
         ),
         training=SimpleNamespace(
             steps_per_epoch=2,
@@ -709,6 +717,7 @@ def test_main_directory_mode_defaults_to_dataset_id_directory(tmp_path, monkeypa
     assert "env2p2" in output_dir.name
     assert (output_dir / "train.npz").exists()
     assert (output_dir / "eval.npz").exists()
+    assert (output_dir / "cells.npz").exists()
     assert (output_dir / "meta.json").exists()
     assert (output_dir / "README.txt").exists()
 
@@ -769,6 +778,7 @@ def test_main_directory_mode_honors_explicit_output_dir(tmp_path, monkeypatch):
     assert output_dir.exists()
     assert (output_dir / "train.npz").exists()
     assert (output_dir / "eval.npz").exists()
+    assert (output_dir / "cells.npz").exists()
     assert (output_dir / "meta.json").exists()
     assert (output_dir / "README.txt").exists()
 
@@ -808,6 +818,7 @@ def test_main_directory_mode_writes_effective_metadata(tmp_path, monkeypatch):
     assert meta["generation"]["eval_num_samples"] == 2
     assert meta["paths"]["train"] == "train.npz"
     assert meta["paths"]["eval"] == "eval.npz"
+    assert meta["paths"]["cells"] == "cells.npz"
 
 
 def test_main_directory_mode_uses_fixed_artifact_names_and_readme_listing(
@@ -865,6 +876,7 @@ def test_main_directory_mode_uses_fixed_artifact_names_and_readme_listing(
     readme_text = (output_dir / "README.txt").read_text(encoding="utf-8")
     assert "train.npz" in readme_text
     assert "eval.npz" in readme_text
+    assert "cells.npz" in readme_text
     assert "meta.json" in readme_text
     assert "train_vis.pdf" in readme_text
     assert "train_traj.mp4" in readme_text
@@ -893,17 +905,23 @@ def test_main_directory_mode_updates_latest_stable_entries(tmp_path, monkeypatch
     latest_dir = tmp_path / "data" / "latest"
     latest_train = latest_dir / "train.npz"
     latest_eval = latest_dir / "eval.npz"
+    latest_cells = latest_dir / "cells.npz"
     latest_meta = latest_dir / "meta.json"
     assert latest_train.exists()
     assert latest_eval.exists()
+    assert latest_cells.exists()
     assert latest_meta.exists()
 
     latest_train_data = np.load(latest_train, allow_pickle=False)
     latest_eval_data = np.load(latest_eval, allow_pickle=False)
     dataset_train_data = np.load(output_dir / "train.npz", allow_pickle=False)
     dataset_eval_data = np.load(output_dir / "eval.npz", allow_pickle=False)
+    latest_cells_data = np.load(latest_cells, allow_pickle=False)
+    dataset_cells_data = np.load(output_dir / "cells.npz", allow_pickle=False)
     assert np.array_equal(latest_train_data["target_pos"], dataset_train_data["target_pos"])
     assert np.array_equal(latest_eval_data["target_pos"], dataset_eval_data["target_pos"])
+    assert np.array_equal(latest_cells_data["pc_centers_0"], dataset_cells_data["pc_centers_0"])
+    assert np.array_equal(latest_cells_data["hdc_centers_0"], dataset_cells_data["hdc_centers_0"])
     assert json.loads(latest_meta.read_text(encoding="utf-8")) == json.loads(
         (output_dir / "meta.json").read_text(encoding="utf-8")
     )
@@ -932,8 +950,10 @@ def test_main_directory_mode_train_only_updates_latest_and_clears_eval(tmp_path,
     generate_data.main()
 
     latest_train = latest_dir / "train.npz"
+    latest_cells = latest_dir / "cells.npz"
     latest_meta = latest_dir / "meta.json"
     assert latest_train.exists()
+    assert latest_cells.exists()
     assert latest_meta.exists()
     assert not stale_eval.exists()
 
@@ -966,11 +986,14 @@ def test_main_directory_mode_latest_output_dir_does_not_self_reference(tmp_path,
     train_path = output_dir / "train.npz"
     eval_path = output_dir / "eval.npz"
     meta_path = output_dir / "meta.json"
+    cells_path = output_dir / "cells.npz"
     assert train_path.exists()
     assert eval_path.exists()
+    assert cells_path.exists()
     assert meta_path.exists()
     assert not train_path.is_symlink()
     assert not eval_path.is_symlink()
+    assert not cells_path.is_symlink()
     assert not meta_path.is_symlink()
 
 

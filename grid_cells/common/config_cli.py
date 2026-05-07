@@ -11,6 +11,7 @@ CONFIG_OVERRIDE_SPECS = {
         "n_hdc": {"type": int, "nargs": "+"},
         "hdc_concentration": {"type": float, "nargs": "+"},
         "seq_len": {"type": int},
+        "cells_path": {"type": str},
         "neurons_seed": {"type": int},
         "velocity_noise": {"type": float, "nargs": "+"},
         "motion_dt": {"type": float},

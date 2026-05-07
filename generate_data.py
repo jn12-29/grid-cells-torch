@@ -23,9 +23,9 @@ from grid_cells.data.artifacts import (
 )
 from grid_cells.cells.encoding_utils import prepare_dataset_animation_inputs
 from grid_cells.cells.ensemble_utils import (
-    get_head_direction_ensembles,
-    get_place_cell_ensembles,
+    get_cell_ensembles,
 )
+from grid_cells.cells.persistence import resolve_cell_centers_path, save_cell_centers
 
 DEFAULT_SPATIAL_BINS = 32
 DEFAULT_DIRECTIONAL_BINS = 20
@@ -319,6 +319,7 @@ def _dataset_paths_from_dir(output_dir: str, train_only: bool = False) -> dict:
     paths = {
         "output_dir": output_dir,
         "train_output": os.path.join(output_dir, "train.npz"),
+        "cells_output": os.path.join(output_dir, "cells.npz"),
         "meta_output": os.path.join(output_dir, "meta.json"),
         "readme_output": os.path.join(output_dir, "README.txt"),
         "train_vis_output": os.path.join(output_dir, "train_vis.pdf"),
@@ -397,6 +398,9 @@ def _write_dataset_readme(readme_output: str, metadata: dict) -> None:
         value = metadata["paths"].get(key)
         if value is not None:
             lines.append(f"- {value}")
+    value = metadata["paths"].get("cells")
+    if value is not None:
+        lines.append(f"- {value}")
 
     optional_names = [
         metadata["paths"].get("train_vis"),
@@ -435,11 +439,17 @@ def _sync_latest_entry(source_path: str | None, latest_path: str) -> None:
         shutil.copy2(source_path, latest_path)
 
 
-def _sync_latest_dataset_entries(train_path: str, eval_path: str | None, meta_path: str) -> None:
+def _sync_latest_dataset_entries(
+    train_path: str,
+    eval_path: str | None,
+    meta_path: str,
+    cells_path: str | None,
+) -> None:
     latest_dir = os.path.join("data", "latest")
     _sync_latest_entry(train_path, os.path.join(latest_dir, "train.npz"))
     _sync_latest_entry(eval_path, os.path.join(latest_dir, "eval.npz"))
     _sync_latest_entry(meta_path, os.path.join(latest_dir, "meta.json"))
+    _sync_latest_entry(cells_path, os.path.join(latest_dir, "cells.npz"))
 
 
 def main() -> None:
@@ -526,8 +536,7 @@ def main() -> None:
         cfg,
         args,
     )
-    pc_ensembles = get_place_cell_ensembles(cfg)
-    hdc_ensembles = get_head_direction_ensembles(cfg)
+    pc_ensembles, hdc_ensembles = get_cell_ensembles(cfg)
 
     vis_path = None if not args.visualize or output_path is None else getattr(data_generation_cfg, "vis_output", None)
     if args.visualize and output_path is not None and explicit_file_mode and args.vis_output is not None:
@@ -561,6 +570,7 @@ def main() -> None:
             "output_dir": dataset_paths["output_dir"],
             "train_output": output_path,
             "eval_output": eval_output_path,
+            "cells_output": dataset_paths["cells_output"],
             "meta_output": dataset_paths["meta_output"],
             "readme_output": dataset_paths["readme_output"],
             "train_vis_output": vis_path,
@@ -614,6 +624,8 @@ def main() -> None:
 
     if eval_output_path is None:
         if not explicit_file_mode:
+            cells_path = dataset_paths["cells_output"]
+            save_cell_centers(cells_path, pc_ensembles, hdc_ensembles, cfg)
             metadata = _build_dataset_metadata(
                 dataset_id=dataset_id,
                 tag=args.tag,
@@ -633,6 +645,14 @@ def main() -> None:
                 train_path=output_path,
                 eval_path=None,
                 meta_path=dataset_paths["meta_output"],
+                cells_path=cells_path,
+            )
+        else:
+            save_cell_centers(
+                resolve_cell_centers_path(cfg),
+                pc_ensembles,
+                hdc_ensembles,
+                cfg,
             )
         return
 
@@ -678,6 +698,8 @@ def main() -> None:
     )
 
     if not explicit_file_mode:
+        cells_path = dataset_paths["cells_output"]
+        save_cell_centers(cells_path, pc_ensembles, hdc_ensembles, cfg)
         metadata = _build_dataset_metadata(
             dataset_id=dataset_id,
             tag=args.tag,
@@ -697,6 +719,14 @@ def main() -> None:
             train_path=output_path,
             eval_path=eval_output_path,
             meta_path=dataset_paths["meta_output"],
+            cells_path=cells_path,
+        )
+    else:
+        save_cell_centers(
+            resolve_cell_centers_path(cfg),
+            pc_ensembles,
+            hdc_ensembles,
+            cfg,
         )
 
 

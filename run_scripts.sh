@@ -26,7 +26,7 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 
 Train
 
-7. Train with the default workflow (reads data/latest/train.npz and data/latest/eval.npz)
+7. Train with the default workflow (reads data/latest/train.npz, eval.npz, and cells.npz)
 CUDA_VISIBLE_DEVICES=0 python train.py
 
 8. Train with config overrides

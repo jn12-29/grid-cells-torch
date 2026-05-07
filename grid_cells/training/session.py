@@ -23,8 +23,7 @@ from grid_cells.cells.encoding_utils import (
     encode_targets,
 )
 from grid_cells.cells.ensemble_utils import (
-    get_head_direction_ensembles,
-    get_place_cell_ensembles,
+    get_cell_ensembles,
 )
 from grid_cells.cells.model import GridCellsRNN
 from grid_cells.analysis.scores import GridScorer
@@ -81,8 +80,7 @@ class TrainingSession:
             getattr(self.cfg.training, "eval_units_per_page", 128),
         )
 
-        pc_ens = get_place_cell_ensembles(self.cfg)
-        hdc_ens = get_head_direction_ensembles(self.cfg)
+        pc_ens, hdc_ens = get_cell_ensembles(self.cfg)
         model = GridCellsRNN(pc_ens, hdc_ens, **vars(self.cfg.model)).to(device)
         optimizer, decoder_params = self.hooks.build_optimizer(model, self.cfg)
         lr_scheduler = self.hooks.build_lr_scheduler(optimizer, self.cfg)

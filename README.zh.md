@@ -90,9 +90,10 @@ tensorboard --logdir results
 - 默认生成目录：`data/datasets/<dataset-id>/`
 - 默认训练入口（最新 train）：`data/latest/train.npz`
 - 默认训练入口（最新 eval）：`data/latest/eval.npz`
+- 最新固定 cell centers：`data/latest/cells.npz`
 - 结果目录：`results/<timestamp>/`
 
-目录模式成功生成后，会把最新的 `train.npz` / `eval.npz` 暴露到 `data/latest/`；`train.py` 会先从 `training.datadir`（默认 `data/latest`）查找这些 split 文件。
+目录模式成功生成后，会把最新的 `train.npz`、`eval.npz` 和 `cells.npz` 暴露到 `data/latest/`；`train.py` 会先从 `training.datadir`（默认 `data/latest`）查找这些 split 文件和固定 cell centers。
 
 如果 `data/latest/train.npz` 不存在，`train.py` 会回退到在线生成轨迹模式。
 
@@ -129,8 +130,9 @@ grid-cells-torch/
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
 - 学习率调度默认通过 `training.lr_scheduler: "none"` 关闭；可用 `--training.lr_scheduler cosine` 或 `--training.lr_scheduler step` 启用。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
-- `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据，并同步 `data/latest/*` 作为训练默认入口。
-- `train.py --training.datadir data/datasets/<dataset-id>` 会优先加载 `<datadir>/train.npz` 和 `<datadir>/eval.npz`，再回退到 legacy 的 `training.data_path` 与 `training.eval_data_path` 字段。
+- `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。
+- `train.py --training.datadir data/datasets/<dataset-id>` 会优先加载 `<datadir>/train.npz`、`<datadir>/eval.npz` 和 `<datadir>/cells.npz`，再回退到 legacy 的 `training.data_path` 与 `training.eval_data_path` 字段。
+- `task.cells_path` 可以显式指定固定的 `cells.npz`；否则训练会在存在时自动加载 `<training.datadir>/cells.npz`。
 - 如果显式传入 `--output` / `--eval_output`，仍可走 legacy 单文件模式。
 - 长期复用的数据生成默认值放在 `config.yaml` 的 `data_generation.*` 下；`--visualize`、`--animate`、`--train_only`、`--visualize_progress` 这类一次性运行开关继续保留在 CLI。
 - 分层包边界如下：

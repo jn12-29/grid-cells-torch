@@ -5,6 +5,7 @@ task:
   n_hdc: [12]            # head direction cell count (one ensemble per entry)
   hdc_concentration: [20.0]  # Von Mises concentration κ (higher = narrower tuning)
   seq_len: 1000          # trajectory sequence length (timesteps per sample)
+  cells_path: null       # optional fixed cell-center file; train auto-loads <training.datadir>/cells.npz when present
   neurons_seed: 8341     # RNG seed for cell center placement (matches original paper)
   targets_type: "softmax"    # training-target encoding: "softmax"/"voronoi"/"sample"/"normalized"
   lstm_init_type: "softmax"  # LSTM initial-state encoding: same options as targets_type, or "zeros"

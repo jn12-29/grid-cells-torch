@@ -38,6 +38,7 @@ def make_cfg():
         task=SimpleNamespace(
             env_size=2.2,
             seq_len=10,
+            cells_path=None,
             neurons_seed=0,
             targets_type="softmax",
             lstm_init_type="softmax",
@@ -326,6 +327,8 @@ def test_register_config_overrides_supports_shared_sections():
         [
             "--task.env_size",
             "3.5",
+            "--task.cells_path",
+            "data/cells.npz",
             "--model.nh_lstm",
             "64",
             "--training.batch_size",
@@ -344,6 +347,7 @@ def test_register_config_overrides_supports_shared_sections():
     )
 
     assert args.task__env_size == 3.5
+    assert args.task__cells_path == "data/cells.npz"
     assert args.model__nh_lstm == 64
     assert args.training__batch_size == 8
     assert args.training__lr_scheduler == "cosine"
@@ -364,6 +368,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "train.py",
             "--task.env_size",
             "2.8",
+            "--task.cells_path",
+            "data/cells.npz",
             "--model.dropout_rate",
             "0.25",
             "--training.batch_size",
@@ -384,6 +390,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     args = parse_train_args()
 
     assert args.task__env_size == 2.8
+    assert args.task__cells_path == "data/cells.npz"
     assert args.model__dropout_rate == 0.25
     assert args.training__batch_size == 16
     assert args.training__lr_scheduler == "step"
