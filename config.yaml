@@ -34,6 +34,10 @@ training:
   eval_data_path: "data/latest/eval.npz"
   optimizer: "adamw"            # "adamw" or "rmsprop"
   lr: 1.0e-3
+  lr_scheduler: "cosine"          # "none", "cosine", or "step"
+  lr_min: 1.0e-5                # minimum learning rate for cosine scheduling
+  lr_step_size: 50              # epoch interval for step scheduling
+  lr_gamma: 0.5                 # learning-rate multiplier for step scheduling
   momentum: 0.9                 # momentum coefficient (used when optimizer is "rmsprop")
   adamw_betas: [0.9, 0.999]    # Adam β1 (gradient) and β2 (squared-gradient) decay rates
   adamw_eps: 1.0e-8            # Adam ε for numerical stability in denominator

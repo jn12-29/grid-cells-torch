@@ -24,6 +24,7 @@ from train import (
     _apply_overrides,
     _build_eval_loader,
     _build_train_loader,
+    build_lr_scheduler,
     build_optimizer,
     get_step_log_interval,
     load_config,
@@ -60,6 +61,10 @@ def make_cfg():
             data_path="data/latest/train.npz",
             optimizer="rmsprop",
             lr=1e-4,
+            lr_scheduler="none",
+            lr_min=1e-6,
+            lr_step_size=2,
+            lr_gamma=0.5,
             momentum=0.9,
             adamw_betas=[0.9, 0.999],
             adamw_eps=1e-8,
@@ -186,6 +191,77 @@ def test_build_optimizer_can_switch_to_adamw():
     assert optimizer.defaults["eps"] == 1e-6
 
 
+def test_build_lr_scheduler_defaults_to_none():
+    """Scheduler builder should preserve fixed learning-rate training by default."""
+    cfg = make_cfg()
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+    optimizer, _ = build_optimizer(model, cfg)
+
+    scheduler = build_lr_scheduler(optimizer, cfg)
+
+    assert scheduler is None
+
+
+def test_build_lr_scheduler_supports_cosine():
+    """Cosine scheduling should decay the optimizer learning rate by epoch."""
+    cfg = make_cfg()
+    cfg.training.epochs = 4
+    cfg.training.lr_scheduler = "cosine"
+    cfg.training.lr = 1e-3
+    cfg.training.lr_min = 1e-5
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+    optimizer, _ = build_optimizer(model, cfg)
+
+    scheduler = build_lr_scheduler(optimizer, cfg)
+    optimizer.step()
+    scheduler.step()
+
+    assert isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
+    assert optimizer.param_groups[0]["lr"] < cfg.training.lr
+    assert optimizer.param_groups[0]["lr"] > cfg.training.lr_min
+
+
+def test_build_lr_scheduler_supports_step():
+    """Step scheduling should apply the configured gamma after each interval."""
+    cfg = make_cfg()
+    cfg.training.lr_scheduler = "step"
+    cfg.training.lr = 1e-3
+    cfg.training.lr_step_size = 1
+    cfg.training.lr_gamma = 0.25
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+    optimizer, _ = build_optimizer(model, cfg)
+
+    scheduler = build_lr_scheduler(optimizer, cfg)
+    optimizer.step()
+    scheduler.step()
+
+    assert isinstance(scheduler, torch.optim.lr_scheduler.StepLR)
+    assert optimizer.param_groups[0]["lr"] == cfg.training.lr * cfg.training.lr_gamma
+
+
+def test_build_lr_scheduler_rejects_unknown_name():
+    """Unsupported scheduler names should fail fast."""
+    cfg = make_cfg()
+    cfg.training.lr_scheduler = "linear"
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+    optimizer, _ = build_optimizer(model, cfg)
+
+    try:
+        build_lr_scheduler(optimizer, cfg)
+    except ValueError as exc:
+        assert "Unsupported learning-rate scheduler" in str(exc)
+    else:
+        raise AssertionError("unknown scheduler should raise ValueError")
+
+
 def test_load_config_returns_nested_namespace(tmp_path):
     """YAML config loading should preserve nested attribute access."""
     config_path = tmp_path / "config.yaml"
@@ -254,6 +330,10 @@ def test_register_config_overrides_supports_shared_sections():
             "64",
             "--training.batch_size",
             "8",
+            "--training.lr_scheduler",
+            "cosine",
+            "--training.lr_min",
+            "1e-5",
             "--training.datadir",
             "data/custom",
             "--visualization.anim_fps",
@@ -266,6 +346,8 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.task__env_size == 3.5
     assert args.model__nh_lstm == 64
     assert args.training__batch_size == 8
+    assert args.training__lr_scheduler == "cosine"
+    assert args.training__lr_min == 1e-5
     assert args.training__datadir == "data/custom"
     assert args.visualization__anim_fps == 30
     assert args.data_generation__num_workers == 2
@@ -286,6 +368,12 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "0.25",
             "--training.batch_size",
             "16",
+            "--training.lr_scheduler",
+            "step",
+            "--training.lr_step_size",
+            "10",
+            "--training.lr_gamma",
+            "0.8",
             "--training.datadir",
             "data/custom",
             "--visualization.anim_step",
@@ -298,6 +386,9 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.task__env_size == 2.8
     assert args.model__dropout_rate == 0.25
     assert args.training__batch_size == 16
+    assert args.training__lr_scheduler == "step"
+    assert args.training__lr_step_size == 10
+    assert args.training__lr_gamma == 0.8
     assert args.training__datadir == "data/custom"
     assert args.visualization__anim_step == 2
 

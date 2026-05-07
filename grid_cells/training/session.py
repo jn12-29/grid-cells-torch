@@ -38,6 +38,7 @@ class TrainingSessionHooks:
     setup_logger: Callable
     create_summary_writer: Callable
     build_optimizer: Callable
+    build_lr_scheduler: Callable
     build_train_loader: Callable
     build_eval_loader: Callable
     evaluate: Callable
@@ -67,6 +68,7 @@ class TrainingSession:
 
         logger.info("Using device: %s", device)
         logger.info("Optimizer: %s", getattr(self.cfg.training, "optimizer", "rmsprop"))
+        logger.info("Learning-rate scheduler: %s", getattr(self.cfg.training, "lr_scheduler", "none"))
         logger.info("Run directory: %s", self.cfg.training.save_dir)
         logger.info(
             "Progress bar enabled: %s",
@@ -83,6 +85,7 @@ class TrainingSession:
         hdc_ens = get_head_direction_ensembles(self.cfg)
         model = GridCellsRNN(pc_ens, hdc_ens, **vars(self.cfg.model)).to(device)
         optimizer, decoder_params = self.hooks.build_optimizer(model, self.cfg)
+        lr_scheduler = self.hooks.build_lr_scheduler(optimizer, self.cfg)
 
         if getattr(self.cfg.training, "use_tqdm", True) and self.hooks.tqdm is None:
             logger.warning("tqdm is not installed; falling back to plain logs")
@@ -126,6 +129,7 @@ class TrainingSession:
                     device=device,
                     model=model,
                     optimizer=optimizer,
+                    lr_scheduler=lr_scheduler,
                     decoder_params=decoder_params,
                     pc_ens=pc_ens,
                     hdc_ens=hdc_ens,
@@ -161,6 +165,7 @@ class TrainingSession:
         device,
         model,
         optimizer,
+        lr_scheduler,
         decoder_params,
         pc_ens,
         hdc_ens,
@@ -247,13 +252,15 @@ class TrainingSession:
         epoch_std = float(np.std(loss_acc))
         epoch_pos_mse = float(np.mean(pos_mse_acc))
         epoch_time = time.time() - epoch_start
+        current_lr = optimizer.param_groups[0]["lr"]
 
         logger.info(
-            "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  seconds=%.1f",
+            "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  lr=%.6g  seconds=%.1f",
             epoch,
             epoch_mean,
             epoch_std,
             epoch_pos_mse,
+            current_lr,
             epoch_time,
         )
 
@@ -261,7 +268,11 @@ class TrainingSession:
             writer.add_scalar("train/loss_mean", epoch_mean, epoch)
             writer.add_scalar("train/loss_std", epoch_std, epoch)
             writer.add_scalar("train/pos_mse_mean", epoch_pos_mse, epoch)
+            writer.add_scalar("train/lr", current_lr, epoch)
             writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
+
+        if lr_scheduler is not None:
+            lr_scheduler.step()
 
         if (epoch + 1) % self.cfg.training.eval_every == 0:
             self.hooks.evaluate(

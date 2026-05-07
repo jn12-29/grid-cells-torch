@@ -71,6 +71,9 @@ python train.py
 # or train with a specific dataset directory containing train.npz and eval.npz
 python train.py --training.datadir data/datasets/<dataset-id>
 
+# or enable an epoch-level learning-rate scheduler
+python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
+
 # or override the shared animation config for eval videos
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
@@ -123,6 +126,7 @@ grid-cells-torch/
 <summary>🔍 More Details</summary>
 
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
+- Learning-rate scheduling is disabled by default with `training.lr_scheduler: "none"`; enable it with `--training.lr_scheduler cosine` or `--training.lr_scheduler step`.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata there, and updates `data/latest/*` for the default training path.
 - `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz` and `<datadir>/eval.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.
@@ -138,6 +142,7 @@ grid-cells-torch/
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
 - Typical override examples:
   `python train.py --task.env_size 2.4 --training.batch_size 32`
+  `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`
   `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` prints a compact list of common train, generate, and TensorBoard commands.
 - The current default config is tuned for the expanded engineering workflow, not a line-by-line lockstep copy of the original hyperparameters.

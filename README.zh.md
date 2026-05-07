@@ -72,6 +72,9 @@ python train.py
 # 或指定包含 train.npz 和 eval.npz 的数据集目录
 python train.py --training.datadir data/datasets/<dataset-id>
 
+# 或启用按 epoch 更新的学习率调度
+python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
+
 # 也可以覆盖评估视频共用的动画参数
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
@@ -124,6 +127,7 @@ grid-cells-torch/
 <summary>🔍 更多说明</summary>
 
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
+- 学习率调度默认通过 `training.lr_scheduler: "none"` 关闭；可用 `--training.lr_scheduler cosine` 或 `--training.lr_scheduler step` 启用。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据，并同步 `data/latest/*` 作为训练默认入口。
 - `train.py --training.datadir data/datasets/<dataset-id>` 会优先加载 `<datadir>/train.npz` 和 `<datadir>/eval.npz`，再回退到 legacy 的 `training.data_path` 与 `training.eval_data_path` 字段。
@@ -139,6 +143,7 @@ grid-cells-torch/
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
 - 常见覆盖示例：
   `python train.py --task.env_size 2.4 --training.batch_size 32`
+  `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`
   `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` 会打印一份精简的常用训练、数据生成和 TensorBoard 命令清单。
 - 当前默认配置更偏向扩展后的工程化实验流程，而不是对原始超参数做逐行逐值锁定。

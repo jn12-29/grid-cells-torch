@@ -110,6 +110,30 @@ def build_optimizer(model, cfg):
     raise ValueError(f"Unsupported optimizer: {cfg.training.optimizer}")
 
 
+def build_lr_scheduler(optimizer, cfg):
+    """Build the configured epoch-level learning-rate scheduler."""
+    scheduler_name = getattr(cfg.training, "lr_scheduler", "none").lower()
+
+    if scheduler_name == "none":
+        return None
+
+    if scheduler_name == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=cfg.training.epochs,
+            eta_min=getattr(cfg.training, "lr_min", 0.0),
+        )
+
+    if scheduler_name == "step":
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=getattr(cfg.training, "lr_step_size", 1),
+            gamma=getattr(cfg.training, "lr_gamma", 0.1),
+        )
+
+    raise ValueError(f"Unsupported learning-rate scheduler: {cfg.training.lr_scheduler}")
+
+
 def _resolve_split_path(cfg, explicit_path: str, split_name: str, fallback_attr: str) -> str:
     """Resolve a train/eval split path, preferring configured dataset directories."""
     if explicit_path:

@@ -44,6 +44,7 @@ from grid_cells.training.cli import parse_train_args
 from grid_cells.training.session import TrainingSession, TrainingSessionHooks
 from grid_cells.training.runtime import (
     build_eval_loader as _build_eval_loader_impl,
+    build_lr_scheduler,
     build_optimizer,
     build_train_loader as _build_train_loader_impl,
     get_step_log_interval,
@@ -181,6 +182,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
         setup_logger=setup_logger,
         create_summary_writer=create_summary_writer,
         build_optimizer=build_optimizer,
+        build_lr_scheduler=build_lr_scheduler,
         build_train_loader=_build_train_loader,
         build_eval_loader=_build_eval_loader,
         evaluate=_evaluate,
