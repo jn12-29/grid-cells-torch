@@ -100,6 +100,7 @@ tensorboard --logdir results
 ## 📦 输出内容
 
 - `train.log`：精简训练日志。
+- `config.yaml`：应用 CLI 覆盖后的 effective 训练配置，并包含最终结果目录。
 - `tensorboard/`：标量指标和配置快照。
 - `rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
 - `hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
@@ -128,6 +129,7 @@ grid-cells-torch/
 <summary>🔍 更多说明</summary>
 
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
+- 每次训练都会把应用 CLI 覆盖后的 effective config 保存到 `<run directory>/config.yaml`。
 - 学习率调度默认通过 `training.lr_scheduler: "none"` 关闭；可用 `--training.lr_scheduler cosine` 或 `--training.lr_scheduler step` 启用。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。

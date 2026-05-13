@@ -35,6 +35,7 @@ class TrainingSessionHooks:
 
     resolve_save_dir: Callable
     setup_logger: Callable
+    save_config: Callable
     create_summary_writer: Callable
     build_optimizer: Callable
     build_lr_scheduler: Callable
@@ -62,6 +63,9 @@ class TrainingSession:
             run_name=getattr(self.cfg.training, "run_name", None),
         )
         logger = self.hooks.setup_logger(self.cfg.training.save_dir)
+        config_path = os.path.join(self.cfg.training.save_dir, "config.yaml")
+        self.hooks.save_config(self.cfg, config_path)
+        logger.info("Saved effective config to %s", config_path)
         writer = self.hooks.create_summary_writer(self.cfg, logger)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

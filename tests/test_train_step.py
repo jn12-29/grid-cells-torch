@@ -21,6 +21,7 @@ from grid_cells.cells.ensembles import PlaceCellEnsemble, HeadDirectionCellEnsem
 from grid_cells.cells.model import GridCellsRNN
 from train import (
     _evaluate,
+    _apply_cli_path_overrides,
     _apply_overrides,
     _build_eval_loader,
     _build_train_loader,
@@ -29,7 +30,9 @@ from train import (
     get_step_log_interval,
     load_config,
     resolve_save_dir,
+    save_config,
 )
+from grid_cells.training.session import TrainingSession, TrainingSessionHooks
 from grid_cells.training.cli import parse_train_args
 
 
@@ -311,6 +314,98 @@ def test_apply_overrides_updates_nested_sections_and_ignores_cli_paths():
     assert cfg.training.epochs == 20
     assert cfg.visualization.anim_step == 2
     assert cfg.data_generation.num_workers == 3
+
+
+def test_apply_cli_path_overrides_updates_effective_training_config():
+    """Explicit dataset CLI paths should appear in the saved effective config."""
+    cfg = SimpleNamespace(
+        training=SimpleNamespace(
+            data_path="data/default-train.npz",
+            eval_data_path="data/default-eval.npz",
+        )
+    )
+    args = SimpleNamespace(
+        data_path="data/cli-train.npz",
+        eval_data_path="data/cli-eval.npz",
+    )
+
+    updated = _apply_cli_path_overrides(cfg, args)
+
+    assert updated is cfg
+    assert cfg.training.data_path == "data/cli-train.npz"
+    assert cfg.training.eval_data_path == "data/cli-eval.npz"
+
+
+def test_save_config_writes_yaml_from_namespace(tmp_path):
+    """Saved configs should be plain YAML that includes current namespace values."""
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(env_size=3.0),
+        training=SimpleNamespace(epochs=20, save_dir=str(tmp_path)),
+    )
+    config_path = tmp_path / "config.yaml"
+
+    save_config(cfg, str(config_path))
+
+    loaded = load_config(str(config_path))
+    assert loaded.task.env_size == 3.0
+    assert loaded.training.epochs == 20
+    assert loaded.training.save_dir == str(tmp_path)
+
+
+def test_training_session_saves_effective_config_before_training(tmp_path, monkeypatch):
+    """Training runs should write config.yaml into the resolved run directory."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.timestamp_save_dir = False
+    cfg.training.epochs = 0
+    cfg.training.use_tensorboard = False
+    cfg.training.run_name = None
+    calls = {}
+
+    class DummyModel:
+        def to(self, device):
+            return self
+
+    def fake_save_config(cfg_arg, path):
+        calls["path"] = path
+        save_config(cfg_arg, path)
+
+    monkeypatch.setattr(
+        "grid_cells.training.session.get_cell_ensembles",
+        lambda cfg_arg: ("pc", "hdc"),
+    )
+    monkeypatch.setattr(
+        "grid_cells.training.session.GridCellsRNN",
+        lambda *args, **kwargs: DummyModel(),
+    )
+    monkeypatch.setattr(
+        TrainingSession,
+        "_build_scorer",
+        lambda self: "scorer",
+    )
+
+    hooks = TrainingSessionHooks(
+        resolve_save_dir=resolve_save_dir,
+        setup_logger=train_module.setup_logger,
+        save_config=fake_save_config,
+        create_summary_writer=lambda cfg_arg, logger: None,
+        build_optimizer=lambda model, cfg_arg: ("optimizer", []),
+        build_lr_scheduler=lambda optimizer, cfg_arg: None,
+        build_train_loader=lambda *args, **kwargs: None,
+        build_eval_loader=lambda *args, **kwargs: "eval-loader",
+        evaluate=lambda *args, **kwargs: None,
+        get_step_log_interval=get_step_log_interval,
+        tqdm=None,
+    )
+
+    TrainingSession(cfg, hooks=hooks).run()
+
+    assert os.path.normpath(calls["path"]) == os.path.normpath(
+        str(tmp_path / "config.yaml")
+    )
+    loaded = load_config(calls["path"])
+    assert loaded.training.save_dir == str(tmp_path)
+    assert loaded.training.epochs == 0
 
 
 def test_register_config_overrides_supports_shared_sections():

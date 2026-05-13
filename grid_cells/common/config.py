@@ -49,6 +49,12 @@ def load_config(path: str = "config.yaml") -> SimpleNamespace:
     return dict_to_namespace(raw)
 
 
+def save_config(cfg: SimpleNamespace, path: str) -> None:
+    """Save a namespace-backed config as YAML."""
+    with open(path, "w") as handle:
+        yaml.safe_dump(namespace_to_dict(cfg), handle, sort_keys=False)
+
+
 def apply_namespace_overrides(
     cfg: SimpleNamespace,
     args: argparse.Namespace,

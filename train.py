@@ -23,6 +23,7 @@ from grid_cells.common.config import (
     dict_to_namespace,
     load_config as _load_config_impl,
     namespace_to_dict,
+    save_config as _save_config_impl,
     str2bool,
 )
 from grid_cells.data.dataset import get_dataloader
@@ -100,6 +101,11 @@ def load_config(path: str = "config.yaml") -> SimpleNamespace:
     return _load_config_impl(path)
 
 
+def save_config(cfg: SimpleNamespace, path: str) -> None:
+    """Save YAML config from a nested namespace."""
+    _save_config_impl(cfg, path)
+
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments that can override yaml defaults."""
     return parse_train_args()
@@ -108,6 +114,15 @@ def parse_args() -> argparse.Namespace:
 def _apply_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNamespace:
     """Apply non-None CLI overrides to the config namespace in-place."""
     return apply_namespace_overrides(cfg, args)
+
+
+def _apply_cli_path_overrides(cfg: SimpleNamespace, args: argparse.Namespace) -> SimpleNamespace:
+    """Reflect explicit dataset path flags in the effective training config."""
+    if args.data_path is not None:
+        cfg.training.data_path = args.data_path
+    if args.eval_data_path is not None:
+        cfg.training.eval_data_path = args.eval_data_path
+    return cfg
 
 
 def _get_animation_setting(cfg: SimpleNamespace, name: str, default):
@@ -180,6 +195,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
     hooks = TrainingSessionHooks(
         resolve_save_dir=resolve_save_dir,
         setup_logger=setup_logger,
+        save_config=save_config,
         create_summary_writer=create_summary_writer,
         build_optimizer=build_optimizer,
         build_lr_scheduler=build_lr_scheduler,
@@ -202,4 +218,5 @@ if __name__ == "__main__":
     args = parse_args()
     cfg = load_config(args.config)
     _apply_overrides(cfg, args)
+    _apply_cli_path_overrides(cfg, args)
     train(cfg, data_path=args.data_path, eval_data_path=args.eval_data_path)
