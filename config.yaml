@@ -49,6 +49,8 @@ training:
   save_dir: "./results"
   run_name: null               # optional name suffix appended to the timestamped run directory
   timestamp_save_dir: true     # prefix run directory with a timestamp; set false to reuse a fixed path
+  checkpoint_every: 0          # save checkpoint every N completed epochs; 0 disables periodic checkpoints
+  save_final_checkpoint: true  # save checkpoints/checkpoint_final.pt after normal training completion
   use_tqdm: true
   use_tensorboard: true
   tensorboard_log_every: 0     # log scalar metrics every N steps; 0 = auto (derived from hooks)

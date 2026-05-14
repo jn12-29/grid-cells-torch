@@ -68,6 +68,9 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 # train with the generated dataset
 python train.py
 
+# or save periodic checkpoints every 5 completed epochs
+python train.py --training.checkpoint_every 5
+
 # or train with a specific dataset directory containing train.npz and eval.npz
 python train.py --training.datadir data/datasets/<dataset-id>
 
@@ -104,6 +107,8 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 - `train.log`: compact training log.
 - `config.yaml`: effective training config after CLI overrides, including the resolved run directory.
 - `tensorboard/`: scalar metrics and config snapshot.
+- `checkpoints/checkpoint_epoch_XXXX.pt`: periodic save-only checkpoint after configured completed epochs.
+- `checkpoints/checkpoint_final.pt`: final save-only checkpoint after normal training completion.
 - `rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
 - `hdc_tuning_epoch_XXXX.pdf`: HDC tuning curves.
 - `eval_animation_epoch_XXXX.mp4`: eval-style 3-panel trajectory animation.
@@ -132,6 +137,7 @@ grid-cells-torch/
 
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - Each training run saves the effective config to `<run directory>/config.yaml` after applying CLI overrides.
+- Checkpoints are save-only analysis artifacts; training resume is not implemented yet.
 - Learning-rate scheduling is disabled by default with `training.lr_scheduler: "none"`; enable it with `--training.lr_scheduler cosine` or `--training.lr_scheduler step`.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.

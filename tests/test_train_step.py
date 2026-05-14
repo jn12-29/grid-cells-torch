@@ -8,6 +8,7 @@ import argparse
 import logging
 import os
 import numpy as np
+import pytest
 import torch
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -34,6 +35,7 @@ from train import (
 )
 from grid_cells.training.session import TrainingSession, TrainingSessionHooks
 from grid_cells.training.cli import parse_train_args
+from grid_cells.training.runtime import save_checkpoint
 
 
 def make_cfg():
@@ -75,6 +77,8 @@ def make_cfg():
             adamw_eps=1e-8,
             weight_decay=1e-5,
             grad_clip=1e-5,
+            checkpoint_every=0,
+            save_final_checkpoint=True,
             eval_every=1,
         ),
         visualization=SimpleNamespace(
@@ -353,6 +357,134 @@ def test_save_config_writes_yaml_from_namespace(tmp_path):
     assert loaded.training.save_dir == str(tmp_path)
 
 
+def test_save_checkpoint_writes_cpu_payload_under_checkpoints(tmp_path):
+    """Checkpoint helper should save a CPU-loadable payload below the run dir."""
+    cfg = SimpleNamespace(
+        task=SimpleNamespace(env_size=2.2),
+        model=SimpleNamespace(nh_lstm=4),
+        training=SimpleNamespace(save_dir=str(tmp_path)),
+    )
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    optimizer.zero_grad()
+    model(torch.ones(1, 1)).sum().backward()
+    optimizer.step()
+
+    class DummyEnsemble:
+        def __init__(self, means):
+            self.means = means
+
+    pc_ens = [DummyEnsemble(np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32))]
+    hdc_ens = [DummyEnsemble(np.array([[0.0], [1.0]], dtype=np.float32))]
+
+    path = save_checkpoint(
+        model,
+        optimizer,
+        None,
+        cfg,
+        pc_ens,
+        hdc_ens,
+        epoch=2,
+        global_step=7,
+        filename="checkpoint_epoch_0002.pt",
+    )
+
+    assert os.path.normpath(os.path.dirname(path)) == os.path.normpath(
+        str(tmp_path / "checkpoints")
+    )
+    payload = torch.load(path, map_location="cpu")
+    assert {
+        "schema_version",
+        "epoch",
+        "global_step",
+        "model_state_dict",
+        "optimizer_state_dict",
+        "scheduler_state_dict",
+        "config",
+        "cell_centers",
+    }.issubset(payload)
+    assert payload["schema_version"] == 1
+    assert payload["epoch"] == 2
+    assert payload["global_step"] == 7
+    assert payload["scheduler_state_dict"] is None
+    assert payload["model_state_dict"]["weight"].device.type == "cpu"
+    assert isinstance(payload["cell_centers"]["pc"][0], torch.Tensor)
+    assert isinstance(payload["cell_centers"]["hdc"][0], torch.Tensor)
+    assert not isinstance(payload["cell_centers"]["pc"][0], np.ndarray)
+    assert payload["cell_centers"]["pc"][0].device.type == "cpu"
+
+    optimizer_tensors = [
+        value
+        for state in payload["optimizer_state_dict"]["state"].values()
+        for value in state.values()
+        if isinstance(value, torch.Tensor)
+    ]
+    assert optimizer_tensors
+    assert all(tensor.device.type == "cpu" for tensor in optimizer_tensors)
+
+
+def _run_stubbed_training_session(
+    cfg,
+    tmp_path,
+    monkeypatch,
+    run_epoch=None,
+    save_calls=None,
+):
+    """Run TrainingSession with injected stubs so scheduling can be tested."""
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.timestamp_save_dir = False
+    cfg.training.use_tensorboard = False
+    cfg.training.run_name = None
+    save_calls = save_calls if save_calls is not None else []
+
+    class DummyModel:
+        def to(self, device):
+            return self
+
+    if run_epoch is None:
+        def run_epoch(self, epoch, global_step, **kwargs):
+            return global_step + 1
+
+    def capture_checkpoint(*args, **kwargs):
+        save_calls.append(
+            {
+                "epoch": kwargs["epoch"],
+                "global_step": kwargs["global_step"],
+                "filename": kwargs["filename"],
+            }
+        )
+        return os.path.join(str(tmp_path), "checkpoints", kwargs["filename"])
+
+    monkeypatch.setattr(
+        "grid_cells.training.session.get_cell_ensembles",
+        lambda cfg_arg: ([], []),
+    )
+    monkeypatch.setattr(
+        "grid_cells.training.session.GridCellsRNN",
+        lambda *args, **kwargs: DummyModel(),
+    )
+    monkeypatch.setattr(TrainingSession, "_build_scorer", lambda self: "scorer")
+    monkeypatch.setattr(TrainingSession, "_run_epoch", run_epoch)
+
+    hooks = TrainingSessionHooks(
+        resolve_save_dir=resolve_save_dir,
+        setup_logger=train_module.setup_logger,
+        save_config=save_config,
+        create_summary_writer=lambda cfg_arg, logger: None,
+        build_optimizer=lambda model, cfg_arg: ("optimizer", []),
+        build_lr_scheduler=lambda optimizer, cfg_arg: "scheduler",
+        build_train_loader=lambda *args, **kwargs: None,
+        build_eval_loader=lambda *args, **kwargs: "eval-loader",
+        evaluate=lambda *args, **kwargs: None,
+        save_checkpoint=capture_checkpoint,
+        get_step_log_interval=get_step_log_interval,
+        tqdm=None,
+    )
+
+    TrainingSession(cfg, hooks=hooks).run()
+    return save_calls
+
+
 def test_training_session_saves_effective_config_before_training(tmp_path, monkeypatch):
     """Training runs should write config.yaml into the resolved run directory."""
     cfg = make_cfg()
@@ -395,6 +527,7 @@ def test_training_session_saves_effective_config_before_training(tmp_path, monke
         build_train_loader=lambda *args, **kwargs: None,
         build_eval_loader=lambda *args, **kwargs: "eval-loader",
         evaluate=lambda *args, **kwargs: None,
+        save_checkpoint=lambda *args, **kwargs: None,
         get_step_log_interval=get_step_log_interval,
         tqdm=None,
     )
@@ -407,6 +540,84 @@ def test_training_session_saves_effective_config_before_training(tmp_path, monke
     loaded = load_config(calls["path"])
     assert loaded.training.save_dir == str(tmp_path)
     assert loaded.training.epochs == 0
+
+
+def test_training_session_schedules_periodic_and_final_checkpoints(tmp_path, monkeypatch):
+    """Checkpoint scheduling should use completed epoch numbers."""
+    cfg = make_cfg()
+    cfg.training.epochs = 3
+    cfg.training.checkpoint_every = 2
+    cfg.training.save_final_checkpoint = True
+
+    def fake_run_epoch(self, epoch, global_step, **kwargs):
+        return global_step + 10
+
+    calls = _run_stubbed_training_session(
+        cfg,
+        tmp_path,
+        monkeypatch,
+        run_epoch=fake_run_epoch,
+    )
+
+    assert calls == [
+        {
+            "epoch": 2,
+            "global_step": 20,
+            "filename": "checkpoint_epoch_0002.pt",
+        },
+        {
+            "epoch": 3,
+            "global_step": 30,
+            "filename": "checkpoint_final.pt",
+        },
+    ]
+
+
+def test_training_session_skips_disabled_and_zero_epoch_checkpoints(tmp_path, monkeypatch):
+    """Disabled checkpointing and zero-epoch training should write no checkpoints."""
+    cfg = make_cfg()
+    cfg.training.epochs = 2
+    cfg.training.checkpoint_every = 0
+    cfg.training.save_final_checkpoint = False
+
+    calls = _run_stubbed_training_session(cfg, tmp_path / "disabled", monkeypatch)
+
+    assert calls == []
+
+    cfg = make_cfg()
+    cfg.training.epochs = 0
+    cfg.training.checkpoint_every = 1
+    cfg.training.save_final_checkpoint = True
+
+    calls = _run_stubbed_training_session(cfg, tmp_path / "zero", monkeypatch)
+
+    assert calls == []
+
+
+def test_training_session_does_not_save_final_checkpoint_after_exception(
+    tmp_path,
+    monkeypatch,
+):
+    """Failed training should not be labeled with a final checkpoint."""
+    cfg = make_cfg()
+    cfg.training.epochs = 3
+    cfg.training.checkpoint_every = 0
+    cfg.training.save_final_checkpoint = True
+    save_calls = []
+
+    def fail_run_epoch(self, epoch, global_step, **kwargs):
+        raise RuntimeError("epoch failed")
+
+    with pytest.raises(RuntimeError, match="epoch failed"):
+        _run_stubbed_training_session(
+            cfg,
+            tmp_path,
+            monkeypatch,
+            run_epoch=fail_run_epoch,
+            save_calls=save_calls,
+        )
+
+    assert save_calls == []
 
 
 def test_register_config_overrides_supports_shared_sections():
@@ -441,6 +652,10 @@ def test_register_config_overrides_supports_shared_sections():
             "1e-5",
             "--training.datadir",
             "data/custom",
+            "--training.checkpoint_every",
+            "5",
+            "--training.save_final_checkpoint",
+            "false",
             "--visualization.anim_fps",
             "30",
             "--data_generation.num_workers",
@@ -458,6 +673,8 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.training__lr_scheduler == "cosine"
     assert args.training__lr_min == 1e-5
     assert args.training__datadir == "data/custom"
+    assert args.training__checkpoint_every == 5
+    assert args.training__save_final_checkpoint is False
     assert args.visualization__anim_fps == 30
     assert args.data_generation__num_workers == 2
 
@@ -489,6 +706,10 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "0.8",
             "--training.datadir",
             "data/custom",
+            "--training.checkpoint_every",
+            "5",
+            "--training.save_final_checkpoint",
+            "false",
             "--visualization.anim_step",
             "2",
         ],
@@ -505,6 +726,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__lr_step_size == 10
     assert args.training__lr_gamma == 0.8
     assert args.training__datadir == "data/custom"
+    assert args.training__checkpoint_every == 5
+    assert args.training__save_final_checkpoint is False
     assert args.visualization__anim_step == 2
 
 

@@ -4,9 +4,11 @@ from datetime import datetime
 import logging
 import math
 import os
+import re
 
 import torch
 
+from grid_cells.common.config import namespace_to_dict
 from grid_cells.data.dataset import get_dataloader
 from grid_cells.training.evaluation import EvaluationHooks, Evaluator
 
@@ -132,6 +134,99 @@ def build_lr_scheduler(optimizer, cfg):
         )
 
     raise ValueError(f"Unsupported learning-rate scheduler: {cfg.training.lr_scheduler}")
+
+
+def _copy_tensors_to_cpu(value):
+    """Recursively copy tensors to CPU without mutating live training objects."""
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        return {key: _copy_tensors_to_cpu(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_tensors_to_cpu(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_tensors_to_cpu(item) for item in value)
+    return value
+
+
+def _validate_checkpoint_filename(filename: str) -> None:
+    """Reject path escapes and names outside the checkpoint contract."""
+    if filename != os.path.basename(filename) or "/" in filename or "\\" in filename:
+        raise ValueError(f"Checkpoint filename must be a basename: {filename}")
+    if filename == "checkpoint_final.pt":
+        return
+    if re.fullmatch(r"checkpoint_epoch_\d{4,}\.pt", filename):
+        return
+    raise ValueError(f"Unsupported checkpoint filename: {filename}")
+
+
+def build_checkpoint_payload(
+    model,
+    optimizer,
+    lr_scheduler,
+    cfg,
+    pc_ens,
+    hdc_ens,
+    epoch: int,
+    global_step: int,
+):
+    """Build a CPU-loadable checkpoint payload for later analysis."""
+    scheduler_state_dict = (
+        None if lr_scheduler is None else _copy_tensors_to_cpu(lr_scheduler.state_dict())
+    )
+
+    return {
+        "schema_version": 1,
+        "epoch": epoch,
+        "global_step": global_step,
+        "model_state_dict": _copy_tensors_to_cpu(model.state_dict()),
+        "optimizer_state_dict": _copy_tensors_to_cpu(optimizer.state_dict()),
+        "scheduler_state_dict": scheduler_state_dict,
+        "config": namespace_to_dict(cfg),
+        "cell_centers": {
+            "pc": [
+                torch.as_tensor(ensemble.means, dtype=torch.float32).cpu()
+                for ensemble in pc_ens
+            ],
+            "hdc": [
+                torch.as_tensor(ensemble.means, dtype=torch.float32).reshape(-1).cpu()
+                for ensemble in hdc_ens
+            ],
+        },
+    }
+
+
+def save_checkpoint(
+    model,
+    optimizer,
+    lr_scheduler,
+    cfg,
+    pc_ens,
+    hdc_ens,
+    epoch: int,
+    global_step: int,
+    filename: str,
+) -> str:
+    """Atomically save one training checkpoint under the run directory."""
+    _validate_checkpoint_filename(filename)
+    checkpoint_dir = os.path.join(cfg.training.save_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    final_path = os.path.join(checkpoint_dir, filename)
+    tmp_path = final_path + ".tmp"
+    payload = build_checkpoint_payload(
+        model,
+        optimizer,
+        lr_scheduler,
+        cfg,
+        pc_ens,
+        hdc_ens,
+        epoch,
+        global_step,
+    )
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, final_path)
+    return final_path
 
 
 def _resolve_split_path(cfg, explicit_path: str, split_name: str, fallback_attr: str) -> str:

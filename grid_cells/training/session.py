@@ -44,6 +44,7 @@ class TrainingSessionHooks:
     build_train_loader: Callable
     build_eval_loader: Callable
     evaluate: Callable
+    save_checkpoint: Callable
     get_step_log_interval: Callable
     tqdm: object
 
@@ -125,6 +126,7 @@ class TrainingSession:
         )
 
         try:
+            completed_epochs = 0
             for epoch in range(self.cfg.training.epochs):
                 global_step = self._run_epoch(
                     epoch=epoch,
@@ -142,6 +144,39 @@ class TrainingSession:
                     fixed_loader=fixed_loader,
                     fixed_eval_loader=fixed_eval_loader,
                 )
+                completed_epochs = epoch + 1
+                checkpoint_every = getattr(self.cfg.training, "checkpoint_every", 0)
+                if checkpoint_every > 0 and completed_epochs % checkpoint_every == 0:
+                    checkpoint_path = self.hooks.save_checkpoint(
+                        model,
+                        optimizer,
+                        lr_scheduler,
+                        self.cfg,
+                        pc_ens,
+                        hdc_ens,
+                        epoch=completed_epochs,
+                        global_step=global_step,
+                        filename=f"checkpoint_epoch_{completed_epochs:04d}.pt",
+                    )
+                    logger.info("Saved checkpoint to %s", checkpoint_path)
+
+            if completed_epochs > 0 and getattr(
+                self.cfg.training,
+                "save_final_checkpoint",
+                True,
+            ):
+                checkpoint_path = self.hooks.save_checkpoint(
+                    model,
+                    optimizer,
+                    lr_scheduler,
+                    self.cfg,
+                    pc_ens,
+                    hdc_ens,
+                    epoch=completed_epochs,
+                    global_step=global_step,
+                    filename="checkpoint_final.pt",
+                )
+                logger.info("Saved final checkpoint to %s", checkpoint_path)
         finally:
             if writer is not None:
                 writer.close()

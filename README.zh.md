@@ -69,6 +69,9 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 # 训练默认读取 data/latest/train.npz 和 data/latest/eval.npz
 python train.py
 
+# 或每完成 5 个 epoch 保存一次 periodic checkpoint
+python train.py --training.checkpoint_every 5
+
 # 或指定包含 train.npz 和 eval.npz 的数据集目录
 python train.py --training.datadir data/datasets/<dataset-id>
 
@@ -105,6 +108,8 @@ tensorboard --logdir results
 - `train.log`：精简训练日志。
 - `config.yaml`：应用 CLI 覆盖后的 effective 训练配置，并包含最终结果目录。
 - `tensorboard/`：标量指标和配置快照。
+- `checkpoints/checkpoint_epoch_XXXX.pt`：按配置在完成指定 epoch 后保存的 save-only checkpoint。
+- `checkpoints/checkpoint_final.pt`：训练正常完成后保存的 final save-only checkpoint。
 - `rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
 - `hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
 - `eval_animation_epoch_XXXX.mp4`：eval 风格的 3-panel 轨迹动画。
@@ -133,6 +138,7 @@ grid-cells-torch/
 
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
 - 每次训练都会把应用 CLI 覆盖后的 effective config 保存到 `<run directory>/config.yaml`。
+- Checkpoint 当前是 save-only 分析产物，尚未实现从 checkpoint 恢复训练。
 - 学习率调度默认通过 `training.lr_scheduler: "none"` 关闭；可用 `--training.lr_scheduler cosine` 或 `--training.lr_scheduler step` 启用。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。

@@ -53,6 +53,7 @@ from grid_cells.training.runtime import (
     resolve_animation_setting,
     resolve_save_dir,
     run_evaluation,
+    save_checkpoint,
     setup_logger,
 )
 
@@ -204,6 +205,7 @@ def train(cfg, data_path: str = None, eval_data_path: str = None):
         build_train_loader=_build_train_loader,
         build_eval_loader=_build_eval_loader,
         evaluate=_evaluate,
+        save_checkpoint=save_checkpoint,
         get_step_log_interval=get_step_log_interval,
         tqdm=tqdm,
     )

@@ -55,6 +55,8 @@ CONFIG_OVERRIDE_SPECS = {
         "save_dir": {"type": str},
         "run_name": {"type": str},
         "timestamp_save_dir": {"type": str2bool},
+        "checkpoint_every": {"type": int},
+        "save_final_checkpoint": {"type": str2bool},
         "use_tqdm": {"type": str2bool},
         "use_tensorboard": {"type": str2bool},
         "tensorboard_log_every": {"type": int},
