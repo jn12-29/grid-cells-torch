@@ -45,6 +45,7 @@ def make_cfg():
             neurons_seed=0,
             targets_type="softmax",
             lstm_init_type="softmax",
+            decode_type="analytic",
             velocity_noise=[0.0, 0.0, 0.0],
             n_pc=[8],
             pc_scale=[0.35],
@@ -424,6 +425,12 @@ def test_register_config_overrides_supports_shared_sections():
             "3.5",
             "--task.cells_path",
             "data/cells.npz",
+            "--task.targets_type",
+            "softmax",
+            "--task.lstm_init_type",
+            "softmax",
+            "--task.decode_type",
+            "analytic",
             "--model.nh_lstm",
             "64",
             "--training.batch_size",
@@ -443,6 +450,9 @@ def test_register_config_overrides_supports_shared_sections():
 
     assert args.task__env_size == 3.5
     assert args.task__cells_path == "data/cells.npz"
+    assert args.task__targets_type == "softmax"
+    assert args.task__lstm_init_type == "softmax"
+    assert args.task__decode_type == "analytic"
     assert args.model__nh_lstm == 64
     assert args.training__batch_size == 8
     assert args.training__lr_scheduler == "cosine"
@@ -465,6 +475,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "2.8",
             "--task.cells_path",
             "data/cells.npz",
+            "--task.decode_type",
+            "weighted_mean",
             "--model.dropout_rate",
             "0.25",
             "--training.batch_size",
@@ -486,6 +498,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
 
     assert args.task__env_size == 2.8
     assert args.task__cells_path == "data/cells.npz"
+    assert args.task__decode_type == "weighted_mean"
     assert args.model__dropout_rate == 0.25
     assert args.training__batch_size == 16
     assert args.training__lr_scheduler == "step"
@@ -493,6 +506,48 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__lr_gamma == 0.8
     assert args.training__datadir == "data/custom"
     assert args.visualization__anim_step == 2
+
+
+def test_validate_cell_code_contract_warns_once_for_non_softmax():
+    """Analytic decode warnings should be emitted once at config validation."""
+    from grid_cells.cells import contracts
+
+    contracts._WARNED_KEYS.clear()
+    cfg = make_cfg()
+    cfg.task.targets_type = "voronoi"
+    cfg.task.lstm_init_type = "zeros"
+    pc_ens = [
+        PlaceCellEnsemble(
+            4,
+            stdev=0.35,
+            pos_min=-1.1,
+            pos_max=1.1,
+            seed=0,
+            soft_targets="voronoi",
+            soft_init="zeros",
+        )
+    ]
+    hdc_ens = [
+        HeadDirectionCellEnsemble(
+            4,
+            concentration=20.0,
+            seed=0,
+            soft_targets="voronoi",
+            soft_init="zeros",
+        )
+    ]
+    messages = []
+
+    class DummyLogger:
+        def warning(self, message):
+            messages.append(message)
+
+    contracts.validate_cell_code_contract(cfg, pc_ens, hdc_ens, DummyLogger())
+    contracts.validate_cell_code_contract(cfg, pc_ens, hdc_ens, DummyLogger())
+
+    assert len(messages) == 2
+    assert "targets_type='softmax'" in messages[0]
+    assert "lstm_init_type='softmax'" in messages[1]
 
 
 def test_create_summary_writer_uses_tensorboard_subdir(monkeypatch):
@@ -809,5 +864,8 @@ def test_evaluate_reports_position_mse(monkeypatch, tmp_path):
     )
 
     assert "eval/pos_mse" in writer.scalars
+    assert "eval/hd_mae_rad" in writer.scalars
     assert writer.scalars["eval/pos_mse"][1] == 2
+    assert writer.scalars["eval/hd_mae_rad"][1] == 2
     assert writer.scalars["eval/pos_mse"][0] < 1e-6
+    assert writer.scalars["eval/hd_mae_rad"][0] < 1e-6

@@ -22,6 +22,7 @@ from grid_cells.data.artifacts import (
     visualize_dataset_animation,
 )
 from grid_cells.cells.encoding_utils import prepare_dataset_animation_inputs
+from grid_cells.cells.contracts import validate_cell_code_contract
 from grid_cells.cells.ensemble_utils import (
     get_cell_ensembles,
 )
@@ -537,6 +538,7 @@ def main() -> None:
         args,
     )
     pc_ensembles, hdc_ensembles = get_cell_ensembles(cfg)
+    validate_cell_code_contract(cfg, pc_ensembles, hdc_ensembles)
 
     vis_path = None if not args.visualize or output_path is None else getattr(data_generation_cfg, "vis_output", None)
     if args.visualize and output_path is not None and explicit_file_mode and args.vis_output is not None:

@@ -6,6 +6,7 @@
 - Python modules should keep a current top-of-file docstring describing purpose and basic usage.
 - `run_scripts.sh` is the shell entrypoint for common workflows and should keep its built-in help text up to date.
 - Shared animation knobs now live under `visualization.anim_*`; keep `train.py` eval videos and `generate_data.py --animate` aligned to that interface.
+- Analytic PC/HDC decoding lives under `grid_cells/cells`; PC logit decoding is scale-invariant for positive scaled raw scores, and raw-score paths should receive log-scores rather than probability activations that may have underflowed.
 - The root-level Python entrypoints are `train.py` and `generate_data.py`; library code imports from `grid_cells.*`.
 - Package boundaries:
   `grid_cells/common` owns shared config helpers.

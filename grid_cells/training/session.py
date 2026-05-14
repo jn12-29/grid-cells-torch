@@ -18,10 +18,12 @@ import torch
 
 from grid_cells.data.dataset import get_dataloader
 from grid_cells.cells.encoding_utils import (
+    compute_head_direction_mae_rad,
     compute_position_mse,
     encode_initial_conditions,
     encode_targets,
 )
+from grid_cells.cells.contracts import validate_cell_code_contract
 from grid_cells.cells.ensemble_utils import (
     get_cell_ensembles,
 )
@@ -85,6 +87,7 @@ class TrainingSession:
         )
 
         pc_ens, hdc_ens = get_cell_ensembles(self.cfg)
+        validate_cell_code_contract(self.cfg, pc_ens, hdc_ens, logger)
         model = GridCellsRNN(pc_ens, hdc_ens, **vars(self.cfg.model)).to(device)
         optimizer, decoder_params = self.hooks.build_optimizer(model, self.cfg)
         lr_scheduler = self.hooks.build_lr_scheduler(optimizer, self.cfg)
@@ -186,6 +189,7 @@ class TrainingSession:
         model.train()
         loss_acc = []
         pos_mse_acc = []
+        hd_mae_acc = []
         epoch_start = time.time()
 
         use_tqdm = getattr(self.cfg.training, "use_tqdm", True) and self.hooks.tqdm is not None
@@ -217,7 +221,13 @@ class TrainingSession:
                 pc_targets, hdc_targets = encode_targets(batch, pc_ens, hdc_ens)
 
             pc_logits, hdc_logits, _, _ = model(init_cond, batch["ego_vel"], training=True)
-            pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
+            with torch.no_grad():
+                pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
+                hd_mae = compute_head_direction_mae_rad(
+                    hdc_logits,
+                    batch["target_hd"],
+                    hdc_ens,
+                )
 
             loss = sum(
                 ens.loss(logits, targets)
@@ -234,8 +244,10 @@ class TrainingSession:
 
             loss_value = loss.item()
             pos_mse_value = float(pos_mse.item())
+            hd_mae_value = float(hd_mae.item())
             loss_acc.append(loss_value)
             pos_mse_acc.append(pos_mse_value)
+            hd_mae_acc.append(hd_mae_value)
             global_step += 1
 
             if use_tqdm:
@@ -243,25 +255,30 @@ class TrainingSession:
                     loss=f"{loss_value:.4f}",
                     avg=f"{np.mean(loss_acc):.4f}",
                     pos_mse=f"{pos_mse_value:.6f}",
+                    hd_mae=f"{hd_mae_value:.4f}",
                 )
 
             should_log_step = ((step + 1) % step_log_interval == 0) or (step == num_steps - 1)
             if writer is not None and should_log_step:
                 writer.add_scalar("train/loss_step", loss_value, global_step)
                 writer.add_scalar("train/pos_mse_step", pos_mse_value, global_step)
+                writer.add_scalar("train/hd_mae_rad_step", hd_mae_value, global_step)
 
         epoch_mean = float(np.mean(loss_acc))
         epoch_std = float(np.std(loss_acc))
         epoch_pos_mse = float(np.mean(pos_mse_acc))
+        epoch_hd_mae = float(np.mean(hd_mae_acc))
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
 
         logger.info(
-            "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  lr=%.6g  seconds=%.1f",
+            "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  hd_mae_rad=%.4f  "
+            "lr=%.6g  seconds=%.1f",
             epoch,
             epoch_mean,
             epoch_std,
             epoch_pos_mse,
+            epoch_hd_mae,
             current_lr,
             epoch_time,
         )
@@ -270,6 +287,7 @@ class TrainingSession:
             writer.add_scalar("train/loss_mean", epoch_mean, epoch)
             writer.add_scalar("train/loss_std", epoch_std, epoch)
             writer.add_scalar("train/pos_mse_mean", epoch_pos_mse, epoch)
+            writer.add_scalar("train/hd_mae_rad_mean", epoch_hd_mae, epoch)
             writer.add_scalar("train/lr", current_lr, epoch)
             writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
 

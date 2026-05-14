@@ -28,7 +28,7 @@
 
 - 预生成 `train/eval` 数据集，并保留在线生成回退模式。
 - 精简 `train.log` 和 TensorBoard 日志。
-- 在训练与评估中加入解码位置指标 `pos_mse`。
+- 在训练与评估中加入 scale-invariant 解析位置解码指标 `pos_mse` 和环形头朝向误差 `hd_mae_rad`。
 - 支持分页 rate-map PDF、HDC tuning PDF，以及训练评估和数据生成共用的 3-panel MP4。
 - 提供以 CLI 为中心的数据生成、可视化和实验管理流程。
 
@@ -41,7 +41,7 @@
 
 ## 🧭 概览
 
-本仓库一开始严格对齐 DeepMind 官方 `grid-cells` 实现，并将核心训练流程迁移到 PyTorch。之后又加入了固定数据集生成、评估 PDF、HDC tuning 图、共用的 3-panel MP4 动画、TensorBoard、`pos_mse` 解码指标以及更完整的 CLI 工作流，更适合做可复现实验和后续分析。
+本仓库一开始严格对齐 DeepMind 官方 `grid-cells` 实现，并将核心训练流程迁移到 PyTorch。之后又加入了固定数据集生成、评估 PDF、HDC tuning 图、共用的 3-panel MP4 动画、TensorBoard、scale-invariant 解析位置解码指标 `pos_mse`、头朝向指标 `hd_mae_rad` 以及更完整的 CLI 工作流，更适合做可复现实验和后续分析。
 
 代码采用以 `grid_cells/` 为根的分层 Python 包结构。根目录提供 `train.py` 和 `generate_data.py` 两个 CLI 入口；库代码导入统一使用 `grid_cells.*` 路径。
 
@@ -77,6 +77,9 @@ python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
 # 也可以覆盖评估视频共用的动画参数
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
+
+# 或显式指定推荐的 scale-invariant 解析解码合同
+python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
 
 # 或查看常用命令清单
 bash run_scripts.sh

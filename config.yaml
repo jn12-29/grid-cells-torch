@@ -9,6 +9,7 @@ task:
   neurons_seed: 8341     # RNG seed for cell center placement (matches original paper)
   targets_type: "softmax"    # training-target encoding: "softmax"/"voronoi"/"sample"/"normalized"
   lstm_init_type: "softmax"  # LSTM initial-state encoding: same options as targets_type, or "zeros"
+  decode_type: "analytic"    # decoder for PC/HDC logits: "analytic" (scale-invariant for positive scaled softmax-compatible raw scores, fallback weighted) or "weighted_mean"
   velocity_noise: [0.0, 0.0, 0.0]  # Gaussian noise std devs (σvx, σvy, σω) added to input velocities
   # Motion model parameters (Sargolini 2006 / Milford 2010 rodent locomotion)
   motion_dt: 0.02     # time step in seconds

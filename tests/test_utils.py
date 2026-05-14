@@ -7,6 +7,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -14,10 +15,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from grid_cells.data.dataset import TrajectoryDataset
 from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
 from grid_cells.cells.encoding_utils import (
+    compute_head_direction_mae_rad,
     compute_position_mse,
     decode_position_from_pc_activations,
+    decode_head_direction_from_hdc_logits,
     decode_position_from_pc_logits,
     prepare_dataset_animation_inputs,
+)
+from grid_cells.cells.decoding import (
+    decode_head_direction_from_hdc_scores,
+    decode_position_from_pc_scores,
 )
 
 
@@ -54,6 +61,142 @@ def test_decode_position_from_pc_activations_returns_weighted_mean():
     assert np.allclose(decoded, np.array([[[1.5, 1.5]]], dtype=np.float32))
 
 
+def test_decode_position_from_pc_scores_analytic_recovers_position():
+    """Analytic PC decoding should invert raw Gaussian log-scores."""
+    ensemble = PlaceCellEnsemble(4, stdev=0.2, pos_min=-1.0, pos_max=1.0, seed=0)
+    ensemble.means = np.array(
+        [[-0.8, -0.8], [0.8, -0.7], [-0.7, 0.9], [0.9, 0.8]],
+        dtype=np.float32,
+    )
+    positions = np.array(
+        [[[0.2, -0.1], [-0.35, 0.4]], [[0.0, 0.0], [0.55, 0.25]]],
+        dtype=np.float32,
+    )
+
+    decoded = decode_position_from_pc_scores(ensemble.unnor_logpdf(positions), ensemble)
+
+    assert np.allclose(decoded, positions, atol=1e-5)
+
+
+def test_decode_position_from_pc_logits_analytic_recovers_position():
+    """Analytic PC-logit decoding should invert softmax-compatible log-scores."""
+    ensemble = PlaceCellEnsemble(4, stdev=0.2, pos_min=-1.0, pos_max=1.0, seed=0)
+    ensemble.means = np.array(
+        [[-0.8, -0.8], [0.8, -0.7], [-0.7, 0.9], [0.9, 0.8]],
+        dtype=np.float32,
+    )
+    positions = np.array([[[0.25, -0.15], [-0.45, 0.3]]], dtype=np.float32)
+    logits = [torch.from_numpy(ensemble.unnor_logpdf(positions))]
+
+    decoded = decode_position_from_pc_logits(logits, [ensemble])
+
+    assert torch.allclose(decoded, torch.from_numpy(positions), atol=1e-5)
+
+
+def test_decode_position_from_pc_logits_analytic_recovers_scaled_log_scores():
+    """PC-logit analytic decoding should be invariant to positive score scale."""
+    ensemble = PlaceCellEnsemble(4, stdev=0.2, pos_min=-1.0, pos_max=1.0, seed=0)
+    ensemble.means = np.array(
+        [[-0.8, -0.8], [0.8, -0.7], [-0.7, 0.9], [0.9, 0.8]],
+        dtype=np.float32,
+    )
+    positions = np.array([[[0.25, -0.15], [-0.45, 0.3]]], dtype=np.float32)
+    raw_scores = torch.from_numpy(ensemble.unnor_logpdf(positions)).double()
+    target = torch.from_numpy(positions).double()
+
+    for scale in (1e-8, 1e-4, 1e-3, 1e-2, 0.1, 1.0, 2.0):
+        logits = [raw_scores * scale + 7.0]
+        decoded = decode_position_from_pc_logits(logits, [ensemble])
+
+        assert torch.allclose(decoded, target, atol=2e-4)
+
+
+def test_decode_position_from_pc_logits_falls_back_for_scale_ambiguous_geometry():
+    """Scale-invariant PC decoding should fallback when alpha is unidentifiable."""
+    ensemble = PlaceCellEnsemble(3, stdev=0.2, pos_min=-1.0, pos_max=1.0, seed=0)
+    ensemble.means = np.array(
+        [[1.0, 0.0], [-0.5, 0.8660254], [-0.5, -0.8660254]],
+        dtype=np.float32,
+    )
+    logits = torch.tensor([[[2.0, -1.0, 0.5]]], dtype=torch.float32)
+
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+    expected = torch.softmax(logits, dim=-1) @ torch.from_numpy(ensemble.means)
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
+
+
+def test_decode_position_from_pc_logits_falls_back_for_off_manifold_logits():
+    """Off-manifold logits should use weighted decoding instead of exploding."""
+    ensemble = PlaceCellEnsemble(5, stdev=0.2, pos_min=-1.0, pos_max=1.0, seed=0)
+    ensemble.means = np.array(
+        [[-0.8, -0.8], [0.8, -0.7], [-0.7, 0.9], [0.9, 0.8], [0.1, -0.2]],
+        dtype=np.float32,
+    )
+    logits = torch.tensor([[[10.0, -10.0, 7.0, -3.0, 0.0]]], dtype=torch.float32)
+
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+    expected = torch.softmax(logits, dim=-1) @ torch.from_numpy(ensemble.means)
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
+
+
+def test_decode_position_from_pc_scores_rejects_rank_deficient_geometry():
+    """Raw-score analytic decoding should not pseudo-invert unsupported PC layouts."""
+    ensemble = PlaceCellEnsemble(2, stdev=0.2, pos_min=-1.0, pos_max=1.0, seed=0)
+    ensemble.means = np.array([[-1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+    positions = np.array([[[0.2, 0.3]]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="full-rank analytic geometry"):
+        decode_position_from_pc_scores(ensemble.unnor_logpdf(positions), ensemble)
+
+
+def test_decode_position_from_pc_logits_rejects_invalid_decode_type():
+    """Direct decoder use should not silently accept a misspelled decode_type."""
+    ensemble = PlaceCellEnsemble(2, stdev=0.35, pos_min=0.0, pos_max=1.0, seed=0)
+    ensemble.decode_type = "bad-mode"
+    logits = [torch.zeros(1, 1, 2)]
+
+    with pytest.raises(ValueError, match="Unsupported ensemble decode_type"):
+        decode_position_from_pc_logits(logits, [ensemble])
+
+
+def test_decode_head_direction_from_hdc_scores_analytic_recovers_angle():
+    """Analytic HDC decoding should invert raw Von Mises log-scores."""
+    ensemble = HeadDirectionCellEnsemble(5, concentration=4.0, seed=0)
+    headings = np.array([[[-3.0], [-0.2], [3.05]]], dtype=np.float32)
+
+    decoded = decode_head_direction_from_hdc_scores(ensemble.unnor_logpdf(headings), ensemble)
+    err = np.angle(np.exp(1j * (decoded - headings)))
+
+    assert np.allclose(err, 0.0, atol=1e-5)
+
+
+def test_compute_head_direction_mae_rad_wraps_circular_error():
+    """Heading MAE should compare angles on the circle, not the real line."""
+    ensemble = HeadDirectionCellEnsemble(5, concentration=4.0, seed=0)
+    headings = np.array([[[np.pi - 0.01]]], dtype=np.float32)
+    logits = [torch.from_numpy(ensemble.unnor_logpdf(headings))]
+    target = torch.tensor([[[-np.pi + 0.01]]], dtype=torch.float32)
+
+    decoded = decode_head_direction_from_hdc_logits(logits, [ensemble])
+    mae = compute_head_direction_mae_rad(logits, target, [ensemble])
+
+    assert torch.allclose(decoded, torch.from_numpy(headings), atol=1e-5)
+    assert torch.isclose(mae, torch.tensor(0.02), atol=1e-5)
+
+
+def test_compute_head_direction_mae_rad_rejects_squeezed_targets():
+    """Heading metrics should fail clearly when target_hd loses its final dimension."""
+    ensemble = HeadDirectionCellEnsemble(5, concentration=4.0, seed=0)
+    headings = np.array([[[0.25]]], dtype=np.float32)
+    logits = [torch.from_numpy(ensemble.unnor_logpdf(headings))]
+    squeezed_target = torch.tensor([[0.25]], dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="target_hd must have shape"):
+        compute_head_direction_mae_rad(logits, squeezed_target, [ensemble])
+
+
 def test_prepare_dataset_animation_inputs_builds_eval_style_payload(tmp_path):
     """Generated datasets should be convertible into the shared 3-panel animation inputs."""
     output_path = tmp_path / "train.npz"
@@ -77,6 +220,7 @@ def test_prepare_dataset_animation_inputs_builds_eval_style_payload(tmp_path):
 
     assert anim_inputs["target_pos"].shape == (2, 4, 2)
     assert anim_inputs["pred_pos"].shape == (2, 4, 2)
+    assert np.allclose(anim_inputs["pred_pos"], anim_inputs["target_pos"], atol=1e-5)
     assert anim_inputs["pc_acts"].shape == (2, 4, 5)
     assert anim_inputs["hdc_acts"].shape == (2, 4, 6)
     assert anim_inputs["pc_centers"].shape == (5, 2)

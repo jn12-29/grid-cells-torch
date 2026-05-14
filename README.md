@@ -28,7 +28,7 @@ Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
 
 - Pre-generated `train/eval` datasets, with on-the-fly fallback.
 - Compact `train.log` and TensorBoard logging.
-- Decoded-position metric `pos_mse` for training and evaluation.
+- Scale-invariant analytic decoded-position metric `pos_mse` and circular head-direction error `hd_mae_rad` for training and evaluation.
 - Paginated rate-map PDFs, HDC tuning PDFs, and shared 3-panel MP4s for eval and generated data.
 - CLI-oriented data generation, visualization, and experiment management.
 
@@ -41,7 +41,7 @@ Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
 
 ## 🧭 Overview
 
-This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, shared 3-panel MP4 animations, TensorBoard logging, a decoded-position metric (`pos_mse`), and a more complete CLI workflow for reproducible experiments.
+This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, shared 3-panel MP4 animations, TensorBoard logging, scale-invariant analytic decoded-position (`pos_mse`) and head-direction (`hd_mae_rad`) metrics, and a more complete CLI workflow for reproducible experiments.
 
 The codebase uses a hierarchical Python package rooted at `grid_cells/`. The root-level Python entrypoints are `train.py` and `generate_data.py`; library imports should target `grid_cells.*`.
 
@@ -76,6 +76,9 @@ python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
 # or override the shared animation config for eval videos
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
+
+# or make the recommended scale-invariant analytic decoding contract explicit
+python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
 
 # or print the common command list
 bash run_scripts.sh

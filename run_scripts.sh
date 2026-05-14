@@ -32,11 +32,14 @@ CUDA_VISIBLE_DEVICES=0 python train.py
 8. Train with config overrides
 CUDA_VISIBLE_DEVICES=0 python train.py --training.epochs 20 --training.eval_every 1 --visualization.anim_step 2
 
-9. Train with cosine learning-rate scheduling
+9. Train with the recommended scale-invariant analytic decoding contract made explicit
+CUDA_VISIBLE_DEVICES=0 python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
+
+10. Train with cosine learning-rate scheduling
 CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
 Monitor
 
-10. Inspect metrics in TensorBoard
+11. Inspect metrics in TensorBoard
 tensorboard --logdir results
 EOF

@@ -26,6 +26,7 @@ class EvaluationHooks:
 
     encode_initial_conditions: Callable
     compute_position_mse: Callable
+    compute_head_direction_mae_rad: Callable
     decode_position_from_pc_logits: Callable
     get_scores_and_plot_from_ratemaps: Callable
     plot_hdc_tuning_curves: Callable
@@ -42,6 +43,8 @@ class EvaluationCollection:
     ratemap_counts: np.ndarray
     eval_pos_mse_sum: float
     eval_pos_batches: int
+    eval_hd_mae_sum: float
+    eval_hd_batches: int
     infer_seconds: float
     anim_data: Optional[dict]
     hd_list: list
@@ -96,10 +99,12 @@ class Evaluator:
             score_seconds = time.time() - score_start
             eval_seconds = time.time() - eval_start
             eval_pos_mse = collected.eval_pos_mse_sum / max(collected.eval_pos_batches, 1)
+            eval_hd_mae = collected.eval_hd_mae_sum / max(collected.eval_hd_batches, 1)
 
             self._log_metrics(
                 epoch,
                 eval_pos_mse,
+                eval_hd_mae,
                 score_60,
                 score_90,
                 collected.infer_seconds,
@@ -127,6 +132,8 @@ class Evaluator:
         eval_start = time.time()
         eval_pos_mse_sum = 0.0
         eval_pos_batches = 0
+        eval_hd_mae_sum = 0.0
+        eval_hd_batches = 0
         anim_data = None
         num_anim_traj = int(self.hooks.get_animation_setting("anim_num_traj", 4))
         hd_list = []
@@ -150,8 +157,15 @@ class Evaluator:
                     batch["target_pos"],
                     self.pc_ens,
                 )
+                hd_mae = self.hooks.compute_head_direction_mae_rad(
+                    hdc_logits,
+                    batch["target_hd"],
+                    self.hdc_ens,
+                )
                 eval_pos_mse_sum += float(pos_mse.item())
                 eval_pos_batches += 1
+                eval_hd_mae_sum += float(hd_mae.item())
+                eval_hd_batches += 1
                 self.scorer.accumulate_ratemaps(
                     batch["target_pos"].detach().cpu().numpy(),
                     bottleneck.detach().cpu().numpy(),
@@ -178,6 +192,8 @@ class Evaluator:
             ratemap_counts=ratemap_counts,
             eval_pos_mse_sum=eval_pos_mse_sum,
             eval_pos_batches=eval_pos_batches,
+            eval_hd_mae_sum=eval_hd_mae_sum,
+            eval_hd_batches=eval_hd_batches,
             infer_seconds=time.time() - eval_start,
             anim_data=anim_data,
             hd_list=hd_list,
@@ -282,6 +298,7 @@ class Evaluator:
         self,
         epoch: int,
         eval_pos_mse: float,
+        eval_hd_mae: float,
         score_60,
         score_90,
         infer_seconds: float,
@@ -292,10 +309,11 @@ class Evaluator:
     ) -> None:
         """Emit logs and optional TensorBoard scalars for one eval pass."""
         self.logger.info(
-            "eval epoch=%d  pos_mse=%.6f  grid_score_60 max=%.4f  grid_score_90 max=%.4f"
-            "  infer=%.1fs  score=%.1fs  total=%.1fs  pdf=%s",
+            "eval epoch=%d  pos_mse=%.6f  hd_mae_rad=%.4f  grid_score_60 max=%.4f  "
+            "grid_score_90 max=%.4f  infer=%.1fs  score=%.1fs  total=%.1fs  pdf=%s",
             epoch,
             eval_pos_mse,
+            eval_hd_mae,
             float(score_60.max()),
             float(score_90.max()),
             infer_seconds,
@@ -308,6 +326,7 @@ class Evaluator:
             return
 
         writer.add_scalar("eval/pos_mse", eval_pos_mse, epoch)
+        writer.add_scalar("eval/hd_mae_rad", eval_hd_mae, epoch)
         writer.add_scalar("eval/grid_score_60_max", float(score_60.max()), epoch)
         writer.add_scalar("eval/grid_score_90_max", float(score_90.max()), epoch)
         writer.add_scalar("eval/seconds", eval_seconds, epoch)

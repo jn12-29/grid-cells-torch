@@ -258,6 +258,7 @@ def run_evaluation(
     *,
     encode_initial_conditions,
     compute_position_mse,
+    compute_head_direction_mae_rad,
     decode_position_from_pc_logits,
     get_scores_and_plot_from_ratemaps,
     plot_hdc_tuning_curves,
@@ -269,6 +270,7 @@ def run_evaluation(
     hooks = EvaluationHooks(
         encode_initial_conditions=encode_initial_conditions,
         compute_position_mse=compute_position_mse,
+        compute_head_direction_mae_rad=compute_head_direction_mae_rad,
         decode_position_from_pc_logits=decode_position_from_pc_logits,
         get_scores_and_plot_from_ratemaps=get_scores_and_plot_from_ratemaps,
         plot_hdc_tuning_curves=plot_hdc_tuning_curves,

@@ -29,6 +29,7 @@ def _make_cfg(train_path: str, eval_path: str = None):
             velocity_noise=[0.0, 0.0, 0.0],
             targets_type="softmax",
             lstm_init_type="softmax",
+            decode_type="analytic",
             n_pc=[8],
             pc_scale=[0.35],
             n_hdc=[6],
@@ -100,6 +101,9 @@ def _make_args(**overrides):
         task__seq_len=None,
         task__env_size=None,
         task__neurons_seed=None,
+        task__targets_type=None,
+        task__lstm_init_type=None,
+        task__decode_type=None,
         training__data_path=None,
         training__eval_data_path=None,
         visualization__spatial_bins=None,
@@ -366,6 +370,7 @@ def test_visualize_animation_prepares_eval_style_inputs(tmp_path, monkeypatch):
     assert anim_path.exists()
     assert captured["target_pos"].shape == (3, 5, 2)
     assert captured["pred_pos"].shape == (3, 5, 2)
+    assert np.allclose(captured["pred_pos"], captured["target_pos"], atol=1e-5)
     assert captured["pc_acts"].shape == (3, 5, 5)
     assert captured["hdc_acts"].shape == (3, 5, 6)
     assert captured["pc_centers"].shape == (5, 2)

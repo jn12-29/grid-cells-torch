@@ -21,17 +21,19 @@ import torch.nn.functional as F
 class CellEnsemble(ABC):
     """Base class for cell ensembles (place cells, head direction cells, etc.)."""
 
-    def __init__(self, n_cells, soft_targets, soft_init):
+    def __init__(self, n_cells, soft_targets, soft_init, decode_type="analytic"):
         """
         Args:
             n_cells: number of cells in the ensemble.
             soft_targets: one of "softmax", "voronoi", "sample", "normalized".
             soft_init: same options as soft_targets, or "zeros". If None,
                        defaults to soft_targets.
+            decode_type: position/heading decoder mode ("analytic" or "weighted_mean").
         """
         self.n_cells = n_cells
         self.soft_targets = soft_targets
         self.soft_init = soft_init if soft_init is not None else soft_targets
+        self.decode_type = decode_type
 
     # ------------------------------------------------------------------
     # Abstract interface — subclasses must implement
@@ -205,6 +207,7 @@ class PlaceCellEnsemble(CellEnsemble):
         seed=None,
         soft_targets="softmax",
         soft_init=None,
+        decode_type="analytic",
     ):
         """
         Args:
@@ -215,8 +218,9 @@ class PlaceCellEnsemble(CellEnsemble):
             seed: random seed for reproducible cell placement.
             soft_targets: target encoding mode ("softmax"/"voronoi"/"sample"/"normalized").
             soft_init: init encoding mode; defaults to soft_targets if None.
+            decode_type: position decoder mode ("analytic" or "weighted_mean").
         """
-        super().__init__(n_cells, soft_targets, soft_init)
+        super().__init__(n_cells, soft_targets, soft_init, decode_type=decode_type)
         self._rng = np.random.RandomState(seed)
         # Cell centres: shape (n_cells, 2)
         self.means = self._rng.uniform(pos_min, pos_max, size=(n_cells, 2)).astype(np.float32)
@@ -252,6 +256,7 @@ class HeadDirectionCellEnsemble(CellEnsemble):
         seed=None,
         soft_targets="softmax",
         soft_init=None,
+        decode_type="analytic",
     ):
         """
         Args:
@@ -260,8 +265,9 @@ class HeadDirectionCellEnsemble(CellEnsemble):
             seed: random seed for reproducible cell placement.
             soft_targets: target encoding mode.
             soft_init: init encoding mode; defaults to soft_targets if None.
+            decode_type: heading decoder mode ("analytic" or "weighted_mean").
         """
-        super().__init__(n_cells, soft_targets, soft_init)
+        super().__init__(n_cells, soft_targets, soft_init, decode_type=decode_type)
         self._rng = np.random.RandomState(seed)
         # Preferred directions uniformly distributed over [-pi, pi)
         self.means = self._rng.uniform(-np.pi, np.pi, size=(n_cells,)).astype(np.float32)

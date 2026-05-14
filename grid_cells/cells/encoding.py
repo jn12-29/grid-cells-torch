@@ -16,25 +16,12 @@ from typing import List
 import numpy as np
 import torch
 
+from grid_cells.cells.decoding import (
+    decode_position_from_pc_activations,
+    decode_position_from_pc_scores,
+    pc_supports_analytic_decode,
+)
 from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
-
-
-def decode_position_from_pc_activations(
-    pc_acts: np.ndarray,
-    pc_centers: np.ndarray,
-) -> np.ndarray:
-    """Decode positions from place-cell activation probabilities via weighted means."""
-    pc_acts = np.asarray(pc_acts, dtype=np.float32)
-    pc_centers = np.asarray(pc_centers, dtype=np.float32)
-    if pc_acts.ndim < 2:
-        raise ValueError("pc_acts must include a cell dimension.")
-    if pc_centers.ndim != 2 or pc_centers.shape[1] != 2:
-        raise ValueError("pc_centers must have shape (n_pc, 2).")
-    if pc_acts.shape[-1] != pc_centers.shape[0]:
-        raise ValueError(
-            "pc_acts and pc_centers must agree on the number of place cells."
-        )
-    return np.tensordot(pc_acts, pc_centers, axes=([-1], [0])).astype(np.float32)
 
 
 @dataclass
@@ -167,7 +154,15 @@ class EnsembleEncoder:
         hdc_acts = np.concatenate(encoded_targets.hdc_targets, axis=-1)
         pc_centers = self.concat_pc_centers()
         hdc_centers = self.concat_hdc_centers()
-        pred_pos = decode_position_from_pc_activations(pc_acts, pc_centers)
+        if all(pc_supports_analytic_decode(ens) for ens in self.pc_ensembles):
+            pc_scores = [ens.unnor_logpdf(target_pos) for ens in self.pc_ensembles]
+            pred_pos = decode_position_from_pc_scores(pc_scores, self.pc_ensembles)
+        else:
+            decoded = [
+                decode_position_from_pc_activations(pc_targets, ens.means)
+                for pc_targets, ens in zip(encoded_targets.pc_targets, self.pc_ensembles)
+            ]
+            pred_pos = np.stack(decoded, axis=0).mean(axis=0).astype(np.float32)
 
         return AnimationInputs(
             target_pos=target_pos,

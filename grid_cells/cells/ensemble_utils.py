@@ -22,6 +22,7 @@ def _create_place_cell_ensembles(cfg) -> List[PlaceCellEnsemble]:
             seed=task_cfg.neurons_seed,
             soft_targets=task_cfg.targets_type,
             soft_init=task_cfg.lstm_init_type,
+            decode_type=getattr(task_cfg, "decode_type", "analytic"),
         )
         for n_cells, scale in zip(task_cfg.n_pc, task_cfg.pc_scale)
     ]
@@ -37,6 +38,7 @@ def _create_head_direction_ensembles(cfg) -> List[HeadDirectionCellEnsemble]:
             seed=task_cfg.neurons_seed,
             soft_targets=task_cfg.targets_type,
             soft_init=task_cfg.lstm_init_type,
+            decode_type=getattr(task_cfg, "decode_type", "analytic"),
         )
         for n_cells, concentration in zip(
             task_cfg.n_hdc,
