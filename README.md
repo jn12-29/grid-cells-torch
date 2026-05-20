@@ -158,6 +158,7 @@ grid-cells-torch/
   `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`
   `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` prints a compact list of common train, generate, and TensorBoard commands.
+- Project maintenance notes and workflow contracts are kept in `docs/maintenance.md`.
 - The current default config is tuned for the expanded engineering workflow, not a line-by-line lockstep copy of the original hyperparameters.
 - README media is mirrored from selected run outputs into `docs/assets/readme/` so the landing page does not depend on ignored `results/` files.
 

@@ -159,6 +159,7 @@ grid-cells-torch/
   `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`
   `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` 会打印一份精简的常用训练、数据生成和 TensorBoard 命令清单。
+- 项目维护说明和工作流契约集中放在 `docs/maintenance.md`。
 - 当前默认配置更偏向扩展后的工程化实验流程，而不是对原始超参数做逐行逐值锁定。
 - README 中使用的媒体资源会从选定运行结果镜像到 `docs/assets/readme/`，避免首页依赖被忽略的 `results/` 文件。
 
