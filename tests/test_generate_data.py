@@ -589,6 +589,7 @@ def test_main_directory_mode_honors_explicit_output_dir(tmp_path, monkeypatch):
         str(tmp_path / "config-eval.npz"),
     )
     output_dir = tmp_path / "baseline-dir"
+    monkeypatch.chdir(tmp_path)
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
     monkeypatch.setattr(
@@ -614,6 +615,7 @@ def test_main_directory_mode_writes_effective_metadata(tmp_path, monkeypatch):
         str(tmp_path / "config-eval.npz"),
     )
     output_dir = tmp_path / "metadata-dir"
+    monkeypatch.chdir(tmp_path)
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
     monkeypatch.setattr(
@@ -656,6 +658,7 @@ def test_main_directory_mode_uses_fixed_artifact_names_and_readme_listing(
     )
     output_dir = tmp_path / "artifact-dir"
     captured = {}
+    monkeypatch.chdir(tmp_path)
 
     def fake_visualize(dataset, save_path, spatial_bins=32, directional_bins=20):
         captured["train_vis"] = save_path
@@ -875,6 +878,7 @@ def test_main_directory_mode_ignores_legacy_artifact_paths(tmp_path, monkeypatch
     cfg.data_generation.progress_output = str(outside_progress)
     cfg.data_generation.eval_progress_output = str(outside_eval_progress)
     captured = {}
+    monkeypatch.chdir(tmp_path)
 
     def fake_visualize(dataset, save_path, spatial_bins=32, directional_bins=20):
         captured["train_vis"] = save_path
