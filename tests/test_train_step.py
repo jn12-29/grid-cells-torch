@@ -226,6 +226,22 @@ def test_build_optimizer_can_switch_to_adamw():
     assert optimizer.defaults["eps"] == 1e-6
 
 
+def test_build_optimizer_can_switch_to_sgd():
+    """Optimizer builder should support SGD via config."""
+    cfg = make_cfg()
+    cfg.training.optimizer = "sgd"
+    cfg.training.momentum = 0.7
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+
+    optimizer, decoder_params = build_optimizer(model, cfg)
+
+    assert isinstance(optimizer, torch.optim.SGD)
+    assert decoder_params
+    assert optimizer.defaults["momentum"] == 0.7
+
+
 def test_build_lr_scheduler_defaults_to_cosine_when_field_missing():
     """Scheduler builder should default missing lr_scheduler to cosine."""
     cfg = make_cfg()

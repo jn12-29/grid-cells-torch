@@ -109,6 +109,15 @@ def build_optimizer(model, cfg):
         )
         return optimizer, decoder_params
 
+    if optimizer_name == "sgd":
+        optimizer = torch.optim.SGD(
+            param_groups,
+            lr=cfg.training.lr,
+            momentum=cfg.training.momentum,
+            weight_decay=0.0,
+        )
+        return optimizer, decoder_params
+
     raise ValueError(f"Unsupported optimizer: {cfg.training.optimizer}")
 
 

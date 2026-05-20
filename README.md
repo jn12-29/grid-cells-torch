@@ -67,6 +67,9 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 # train with the generated dataset
 python train.py
 
+# or choose an optimizer
+python train.py --training.optimizer sgd --training.momentum 0.9
+
 # or save periodic checkpoints every 5 completed epochs
 python train.py --training.checkpoint_every 5
 
@@ -146,6 +149,7 @@ grid-cells-torch/
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - Each training run saves the effective config to `<run directory>/config.yaml` after applying CLI overrides.
 - Checkpoints are save-only analysis artifacts; training resume is not implemented yet.
+- Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, and `sgd`; `training.momentum` applies to RMSprop and SGD.
 - Learning-rate scheduling defaults to `training.lr_scheduler: "cosine"`; use `--training.lr_scheduler none` to disable it or `--training.lr_scheduler step` for StepLR.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
