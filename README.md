@@ -80,7 +80,10 @@ python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
 # or reduce statistical-analysis cost for a quick run
-python train.py --analysis.num_shuffles 20 --analysis.max_eval_trajectories 64
+python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shuffles 50 --analysis.max_eval_trajectories 64
+
+# or run only per-unit Banino-style grid geometry analysis
+python train.py --analysis.compute_grid_selectivity false --analysis.compute_grid_geometry true --analysis.compute_shuffle_significance false --analysis.compute_split_half false --analysis.compute_hd_selectivity false
 
 # or make the recommended scale-invariant analytic decoding contract explicit
 python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
@@ -116,7 +119,7 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 - `eval_plots/rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
 - `eval_plots/hdc_tuning_epoch_XXXX.pdf`: HDC tuning curves.
 - `eval_videos/eval_animation_epoch_XXXX.mp4`: sequential eval trajectory animation; multiple trajectories are joined into one video.
-- `eval_stats/grid_stats_epoch_XXXX.csv`, `eval_stats/grid_stats_epoch_XXXX.npz`, `eval_stats/grid_stats_summary_epoch_XXXX.json`: bottleneck-unit grid significance, split-half reliability, head-direction selectivity, and mixed-selectivity counts when `analysis.enabled=true`.
+- `eval_stats/grid_stats_epoch_XXXX.csv`, `eval_stats/grid_stats_epoch_XXXX.npz`, `eval_stats/grid_stats_summary_epoch_XXXX.json`: bottleneck-unit grid significance, Banino-style grid scale, split-half reliability, head-direction selectivity, and mixed-selectivity counts when `analysis.enabled=true`. Individual statistical modules can be toggled with `analysis.compute_grid_selectivity`, `analysis.compute_grid_geometry`, `analysis.compute_shuffle_significance`, `analysis.compute_split_half`, and `analysis.compute_hd_selectivity`; disabled modules keep their artifact fields with `NaN` or `false` placeholder values. Grid-scale summary fields include all finite per-unit scales plus `grid_fdr_*` variants for FDR-significant grid units and `grid_threshold_*` variants for `grid_score_60 >= analysis.gridness_threshold` units, including Banino-style discreteness shuffle significance and 1D GMM/BIC scale-cluster fitting.
 
 ## 🗂️ Repo Layout
 
@@ -158,7 +161,7 @@ grid-cells-torch/
   `grid_cells/analysis` owns scoring and plotting helpers.
   `grid_cells/viz` owns animation rendering.
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
-- Statistical evaluation defaults live under `analysis.*`; `analysis.max_eval_trajectories` caps the eval subset retained for shuffle-based analysis.
+- Statistical evaluation defaults live under `analysis.*`; `analysis.max_eval_trajectories` caps the eval subset retained for `spatial_stats` analysis.
 - Training always runs a baseline evaluation at epoch 0, then evaluates every `training.eval_every` completed epochs. `training.eval_plot_every` counts these evaluation calls, including the epoch-0 baseline, when deciding whether to export PDFs and animations.
 - Typical override examples:
   `python train.py --task.env_size 2.4 --training.batch_size 32`

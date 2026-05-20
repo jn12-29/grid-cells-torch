@@ -72,11 +72,22 @@ visualization:
 
 analysis:
   enabled: true
+  compute_grid_selectivity: true
+  compute_grid_geometry: true
+  compute_shuffle_significance: false
+  compute_split_half: false
+  compute_hd_selectivity: false
   num_shuffles: 200
+  scale_discreteness_num_shuffles: 500
+  scale_discreteness_bins: 13
+  scale_discreteness_min_bins: 10.0
+  scale_discreteness_max_bins: 36.0
+  scale_gmm_max_components: 8
+  gridness_threshold: 0.37
   fdr_alpha: 0.05
   min_shift_fraction: 0.1
   split_half_min_corr: 0.3
-  max_eval_trajectories: 512
+  max_eval_trajectories: 10000
   random_seed: 0
 
 data_generation:

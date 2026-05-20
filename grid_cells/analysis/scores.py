@@ -310,6 +310,86 @@ class GridScorer(object):
         x_coef[np.abs(x_coef) < 2e-6] = 0.0
         return x_coef
 
+    def calculate_grid_scale(
+        self,
+        sac,
+        n_peaks: int = 6,
+        exclude_center_radius: float = 1.0,
+        min_peak_value: float = 0.0,
+    ):
+        """Estimate grid scale from the nearest non-central SAC peaks."""
+        peak_distances = self.grid_scale_peak_distances(
+            sac,
+            exclude_center_radius=exclude_center_radius,
+            min_peak_value=min_peak_value,
+        )
+        if peak_distances.size < n_peaks:
+            return np.nan, int(peak_distances.size)
+        return float(np.median(peak_distances[:n_peaks])), int(peak_distances.size)
+
+    def calculate_grid_scales(
+        self,
+        sacs,
+        n_peaks: int = 6,
+        exclude_center_radius: float = 1.0,
+        min_peak_value: float = 0.0,
+    ):
+        """Estimate grid scale for each SAC in a batch."""
+        sacs = np.asarray(sacs)
+        if sacs.ndim == 2:
+            sacs = sacs[np.newaxis, ...]
+
+        scales = np.full(sacs.shape[0], np.nan, dtype=np.float64)
+        peak_counts = np.zeros(sacs.shape[0], dtype=np.int64)
+        for index, sac in enumerate(sacs):
+            scale, peak_count = self.calculate_grid_scale(
+                sac,
+                n_peaks=n_peaks,
+                exclude_center_radius=exclude_center_radius,
+                min_peak_value=min_peak_value,
+            )
+            scales[index] = scale
+            peak_counts[index] = peak_count
+        return scales, peak_counts
+
+    def grid_scale_peak_distances(
+        self,
+        sac,
+        exclude_center_radius: float = 1.0,
+        min_peak_value: float = 0.0,
+    ):
+        """Return SAC local-maximum distances from the origin, nearest first."""
+        sac = np.asarray(sac, dtype=np.float64)
+        if sac.ndim != 2:
+            raise ValueError("sac must have shape (height, width)")
+
+        filled = np.where(np.isfinite(sac), sac, -np.inf)
+        local_max = filled == scipy.ndimage.maximum_filter(
+            filled,
+            size=3,
+            mode="constant",
+            cval=-np.inf,
+        )
+        local_max &= np.isfinite(sac)
+        if min_peak_value is not None:
+            local_max &= sac > float(min_peak_value)
+
+        center = np.asarray([(sac.shape[0] - 1) / 2.0, (sac.shape[1] - 1) / 2.0])
+        coords = np.argwhere(local_max)
+        if coords.size == 0:
+            return np.empty(0, dtype=np.float64)
+
+        distances = np.linalg.norm(coords - center[np.newaxis, :], axis=1)
+        keep = distances > float(exclude_center_radius)
+        coords = coords[keep]
+        distances = distances[keep]
+        if distances.size == 0:
+            return np.empty(0, dtype=np.float64)
+
+        values = sac[coords[:, 0], coords[:, 1]]
+        order = np.lexsort((-values, distances))
+        return distances[order]
+
     def get_scores_batch(self, ratemaps):
         """Score a chunk of rate maps with batched rotation and mask correlation."""
         ratemaps = np.asarray(ratemaps)

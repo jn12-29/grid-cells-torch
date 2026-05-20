@@ -1,6 +1,6 @@
 # Goal: Grid-Cell Statistical Analysis
 
-Current grid-cell analysis in `/home/xh/ai4neuron/gridCells/grid-cells-torch` is too simple: it mainly exports bottleneck-unit rate maps, SACs, and maximum grid scores. Add a v1 statistical analysis layer from a neuroscience research perspective so evaluation reports significance, reliability, and head-direction mixed selectivity.
+Evaluation includes a modular statistical analysis layer for bottleneck-unit spatial selectivity, Banino-style grid geometry, reliability, and head-direction mixed selectivity.
 
 ## Assumptions
 
@@ -8,7 +8,7 @@ Current grid-cell analysis in `/home/xh/ai4neuron/gridCells/grid-cells-torch` is
 - "Head cells" means head-direction cells / HDC. In this goal, also analyze whether `bottleneck` units are head-direction selective.
 - Do not rewrite the existing training flow or grid-score implementation.
 - Reuse `grid_cells.analysis.scores.GridScorer` and existing rate-map logic.
-- Implement the smallest testable statistical version first. Do not implement complex module clustering in v1.
+- Implement population-level grid-scale distribution analysis for FDR-significant grid units and fixed-threshold grid units, including Banino-style discreteness significance and GMM/BIC scale-cluster fitting.
 - Use English for code, comments, fields, and docs. Communicate with the user in Chinese.
 
 ## Required Features
@@ -31,7 +31,39 @@ p = (1 + count(null_score >= observed_score)) / (1 + num_shuffles)
 - Output q-values.
 - Mark FDR-significant units using configured `fdr_alpha`.
 
-### 2. Split-Half Reliability
+### 2. Banino-Style Grid Geometry
+
+For each bottleneck unit, compute a rate map, spatial autocorrelogram, and grid scale.
+
+- Identify local maxima in the spatial autocorrelogram.
+- Exclude the central peak.
+- Use the six local maxima nearest the origin.
+- `grid_scale_bins` is the median distance from those six peaks to the origin in spatial bins.
+- `grid_scale_m` converts `grid_scale_bins` using the scorer's spatial bin size.
+- Output `grid_scale_peak_count` and `grid_scale_valid`.
+- Summary fields should include all finite per-unit scales, `grid_fdr_*` variants restricted to FDR-significant grid units, and `grid_threshold_*` variants restricted to units with `grid_score_60 >= analysis.gridness_threshold`.
+- `grid_scale_discreteness` is an all-unit quick histogram summary using the finite scales' natural range; complete Banino-style fixed-range shuffle significance is reported in the `grid_fdr_scale_discreteness*` and `grid_threshold_scale_discreteness*` fields.
+
+### 3. Grid-Scale Population Distribution
+
+For FDR-significant grid units and fixed-threshold grid units with valid `grid_scale_bins`, compute population-level scale-distribution statistics following Banino et al.
+
+- This population analysis requires grid selectivity and shuffle significance; if `compute_grid_selectivity=false` or no unit passes FDR, `grid_fdr_*` population fields are empty or `None`.
+- In parallel, `grid_threshold_*` uses the Banino-style fixed gridness threshold from `analysis.gridness_threshold`, default `0.37`; it does not require shuffle significance, but it does require grid selectivity scores.
+- Discreteness uses a histogram of `grid_scale_bins` with `analysis.scale_discreteness_bins` bins across `analysis.scale_discreteness_min_bins` to `analysis.scale_discreteness_max_bins`; defaults are 13 bins across 10 to 36 spatial bins.
+- Discreteness score is the standard deviation of histogram counts.
+- Discreteness significance uses `analysis.scale_discreteness_num_shuffles` shuffles; for each shuffle and each unit, add uniform noise in `[-0.5 * min_scale, +0.5 * min_scale]`, recompute discreteness, and compute a one-sided p-value:
+
+```text
+p = (1 + count(null_discreteness >= observed_discreteness)) / (1 + num_shuffles)
+```
+
+- Store the discreteness null distributions in the NPZ artifact as `grid_fdr_scale_discreteness_null` and `grid_threshold_scale_discreteness_null`.
+- Fit 1-D Gaussian mixture models to valid FDR-grid scales and fixed-threshold grid scales for 1 to `analysis.scale_gmm_max_components` components, default 8.
+- Use EM fitting and Bayesian Information Criterion to select the component count with the lowest BIC.
+- Report best component count, BIC values, component means in bins and meters, and component weights in summary JSON.
+
+### 4. Split-Half Reliability
 
 Compute split-half reliability across trajectories.
 
@@ -49,7 +81,7 @@ Compute split-half reliability across trajectories.
 - FDR-significant grid score.
 - `split_half_corr >= split_half_min_corr`.
 
-### 3. Bottleneck Head-Direction Selectivity
+### 5. Bottleneck Head-Direction Selectivity
 
 Analyze head-direction selectivity for bottleneck units, not only HDC output heads.
 
@@ -62,7 +94,7 @@ Analyze head-direction selectivity for bottleneck units, not only HDC output hea
   - Benjamini-Hochberg q-value
 - Mark significant HD-selective units using configured `fdr_alpha`.
 
-### 4. Output Artifacts
+### 6. Output Artifacts
 
 When analysis is enabled, evaluation should additionally write these artifacts to the current run save directory:
 
@@ -82,6 +114,10 @@ grid_score_60_p
 grid_score_60_q
 grid_score_90_p
 grid_score_90_q
+grid_scale_bins
+grid_scale_m
+grid_scale_peak_count
+grid_scale_valid
 null_60_mean
 null_60_std
 null_60_95
@@ -93,6 +129,7 @@ hd_preferred_direction_rad
 hd_p
 hd_q
 is_grid_fdr
+is_grid_threshold
 is_reliable_grid
 is_hd_selective
 unit_class
@@ -112,12 +149,51 @@ Summary JSON should include at least:
 ```text
 n_units
 n_grid_fdr
+n_grid_threshold
 n_reliable_grid
 n_hd_selective
 n_grid_and_hd
 median_grid_score_60
+n_grid_scale_valid
+median_grid_scale_m
+mean_grid_scale_m
+grid_scale_discreteness
+n_grid_fdr_scale_valid
+median_grid_fdr_scale_m
+mean_grid_fdr_scale_m
+grid_fdr_scale_discreteness
+grid_fdr_scale_discreteness_p
+grid_fdr_scale_discreteness_null_mean
+grid_fdr_scale_discreteness_null_std
+grid_fdr_scale_discreteness_num_shuffles
+grid_fdr_scale_gmm_best_components
+grid_fdr_scale_gmm_best_bic
+grid_fdr_scale_gmm_component_means_bins
+grid_fdr_scale_gmm_component_means_m
+grid_fdr_scale_gmm_component_weights
+grid_fdr_scale_gmm_bic
+n_grid_threshold_scale_valid
+median_grid_threshold_scale_m
+mean_grid_threshold_scale_m
+grid_threshold_scale_discreteness
+grid_threshold_scale_discreteness_p
+grid_threshold_scale_discreteness_null_mean
+grid_threshold_scale_discreteness_null_std
+grid_threshold_scale_discreteness_num_shuffles
+grid_threshold_scale_gmm_best_components
+grid_threshold_scale_gmm_best_bic
+grid_threshold_scale_gmm_component_means_bins
+grid_threshold_scale_gmm_component_means_m
+grid_threshold_scale_gmm_component_weights
+grid_threshold_scale_gmm_bic
 median_split_half_corr
 analysis_num_shuffles
+analysis_gridness_threshold
+analysis_compute_grid_selectivity
+analysis_compute_grid_geometry
+analysis_compute_shuffle_significance
+analysis_compute_split_half
+analysis_compute_hd_selectivity
 ```
 
 ## Config
@@ -127,7 +203,18 @@ Add this section to `config.yaml`:
 ```yaml
 analysis:
   enabled: true
+  compute_grid_selectivity: true
+  compute_grid_geometry: true
+  compute_shuffle_significance: true
+  compute_split_half: true
+  compute_hd_selectivity: true
   num_shuffles: 200
+  scale_discreteness_num_shuffles: 500
+  scale_discreteness_bins: 13
+  scale_discreteness_min_bins: 10.0
+  scale_discreteness_max_bins: 36.0
+  scale_gmm_max_components: 8
+  gridness_threshold: 0.37
   fdr_alpha: 0.05
   min_shift_fraction: 0.1
   split_half_min_corr: 0.3
@@ -163,6 +250,9 @@ Add or update tests covering at least:
 3. Split-half reliability returns high correlation for identical or near-identical maps.
 4. Analysis disabled does not require new artifacts.
 5. A small synthetic input can generate a complete stats table/dict with required fields.
+6. Individual analysis modules can be disabled while preserving artifact schema.
+7. Grid-scale discreteness shuffle returns a finite score, p-value, and null distribution.
+8. GMM/BIC fitting returns sorted component means and a selected component count.
 
 Prefer lightweight tests. Do not run full training.
 
@@ -187,3 +277,5 @@ Documentation should describe current final behavior only, not old-vs-new migrat
   - number of reliable grid-like units
   - number of HD-selective units
   - number of mixed grid+HD units
+  - Banino-style grid scale for each unit with enough SAC peaks
+  - FDR-grid and fixed-threshold grid scale discreteness, shuffle p-values, GMM/BIC component counts, means, and weights

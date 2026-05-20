@@ -97,7 +97,18 @@ def make_cfg():
         ),
         analysis=SimpleNamespace(
             enabled=False,
+            compute_grid_selectivity=True,
+            compute_grid_geometry=True,
+            compute_shuffle_significance=True,
+            compute_split_half=True,
+            compute_hd_selectivity=True,
             num_shuffles=200,
+            scale_discreteness_num_shuffles=500,
+            scale_discreteness_bins=13,
+            scale_discreteness_min_bins=10.0,
+            scale_discreteness_max_bins=36.0,
+            scale_gmm_max_components=8,
+            gridness_threshold=0.37,
             fdr_alpha=0.05,
             min_shift_fraction=0.1,
             split_half_min_corr=0.3,
@@ -687,8 +698,22 @@ def test_register_config_overrides_supports_shared_sections():
             "30",
             "--analysis.enabled",
             "false",
+            "--analysis.compute_grid_selectivity",
+            "false",
+            "--analysis.compute_grid_geometry",
+            "false",
+            "--analysis.compute_shuffle_significance",
+            "false",
+            "--analysis.compute_split_half",
+            "false",
             "--analysis.num_shuffles",
             "10",
+            "--analysis.scale_discreteness_num_shuffles",
+            "25",
+            "--analysis.scale_gmm_max_components",
+            "4",
+            "--analysis.gridness_threshold",
+            "0.25",
             "--data_generation.num_workers",
             "2",
         ]
@@ -708,7 +733,14 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.training__save_final_checkpoint is False
     assert args.visualization__anim_fps == 30
     assert args.analysis__enabled is False
+    assert args.analysis__compute_grid_selectivity is False
+    assert args.analysis__compute_grid_geometry is False
+    assert args.analysis__compute_shuffle_significance is False
+    assert args.analysis__compute_split_half is False
     assert args.analysis__num_shuffles == 10
+    assert args.analysis__scale_discreteness_num_shuffles == 25
+    assert args.analysis__scale_gmm_max_components == 4
+    assert args.analysis__gridness_threshold == 0.25
     assert args.data_generation__num_workers == 2
 
 
@@ -747,6 +779,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "2",
             "--analysis.enabled",
             "false",
+            "--analysis.compute_hd_selectivity",
+            "false",
             "--analysis.max_eval_trajectories",
             "16",
         ],
@@ -767,6 +801,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__save_final_checkpoint is False
     assert args.visualization__anim_step == 2
     assert args.analysis__enabled is False
+    assert args.analysis__compute_hd_selectivity is False
     assert args.analysis__max_eval_trajectories == 16
 
 
@@ -1329,3 +1364,196 @@ def test_evaluate_analysis_enabled_writes_grid_stats(monkeypatch, tmp_path):
     assert (stats_dir / "grid_stats_epoch_0003.csv").exists()
     assert (stats_dir / "grid_stats_epoch_0003.npz").exists()
     assert (stats_dir / "grid_stats_summary_epoch_0003.json").exists()
+
+
+class _AnalysisDummyModel:
+    training = False
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def eval(self):
+        self.training = False
+
+    def train(self):
+        self.training = True
+
+    def __call__(self, init_cond, ego_vel, training=False):
+        batch, seq_len = ego_vel.shape[:2]
+        pc_logits = [torch.zeros(batch, seq_len, 2, dtype=ego_vel.dtype)]
+        hdc_logits = [torch.zeros(batch, seq_len, 4, dtype=ego_vel.dtype)]
+        bottleneck = torch.zeros(
+            batch,
+            seq_len,
+            self.cfg.model.nh_bottleneck,
+            dtype=ego_vel.dtype,
+        )
+        lstm_acts = torch.zeros(
+            batch,
+            seq_len,
+            self.cfg.model.nh_lstm,
+            dtype=ego_vel.dtype,
+        )
+        return pc_logits, hdc_logits, bottleneck, lstm_acts
+
+
+class _AnalysisDummyScorer:
+    def allocate_ratemap_accumulators(self, n_units):
+        return (
+            np.zeros((n_units, 2, 2), dtype=np.float32),
+            np.zeros((2, 2), dtype=np.float32),
+        )
+
+    def accumulate_ratemaps(self, positions, activations, ratemap_sums, ratemap_counts):
+        ratemap_sums += 1.0
+        ratemap_counts += 1.0
+
+    def finalize_ratemaps(self, ratemap_sums, ratemap_counts):
+        return ratemap_sums
+
+
+def _minimal_analysis_result():
+    return {
+        "fields": ["unit_id"],
+        "rows": [{"unit_id": 0}],
+        "arrays": {"unit_id": np.array([0])},
+        "summary": {
+            "n_grid_fdr": 0,
+            "n_grid_threshold": 0,
+            "n_reliable_grid": 0,
+            "n_hd_selective": 0,
+            "n_grid_and_hd": 0,
+        },
+        "null_grid_score_60": np.empty((0, 1)),
+        "null_grid_score_90": np.empty((0, 1)),
+        "null_hd_mrl": np.empty((0, 1)),
+        "grid_fdr_scale_discreteness_null": np.empty(0),
+        "grid_threshold_scale_discreteness_null": np.empty(0),
+        "directional_tuning": np.empty((1, 0)),
+    }
+
+
+def _single_eval_batch():
+    return {
+        "init_pos": torch.zeros(1, 2),
+        "init_hd": torch.zeros(1, 1),
+        "ego_vel": torch.zeros(1, 3, 3),
+        "target_pos": torch.zeros(1, 3, 2),
+        "target_hd": torch.zeros(1, 3, 1),
+    }
+
+
+def test_evaluate_passes_analysis_module_flags(monkeypatch, tmp_path):
+    """Evaluation should forward selective analysis module flags to spatial stats."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_plot_every = 0
+    cfg.analysis.enabled = True
+    cfg.analysis.compute_grid_selectivity = False
+    cfg.analysis.compute_grid_geometry = False
+    cfg.analysis.compute_shuffle_significance = False
+    cfg.analysis.compute_split_half = True
+    cfg.analysis.compute_hd_selectivity = False
+    cfg.analysis.scale_discreteness_num_shuffles = 17
+    cfg.analysis.scale_discreteness_bins = 9
+    cfg.analysis.scale_discreteness_min_bins = 8.0
+    cfg.analysis.scale_discreteness_max_bins = 40.0
+    cfg.analysis.scale_gmm_max_components = 5
+    cfg.analysis.gridness_threshold = 0.29
+    cfg.analysis.max_eval_trajectories = 1
+    captured = {}
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    def fake_analyze(*args, **kwargs):
+        captured.update(kwargs)
+        return _minimal_analysis_result()
+
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.analyze_bottleneck_spatial_stats",
+        fake_analyze,
+    )
+    monkeypatch.setattr(
+        train_module,
+        "score_ratemaps",
+        lambda *args, **kwargs: (
+            np.zeros(cfg.model.nh_bottleneck),
+            np.zeros(cfg.model.nh_bottleneck),
+            None,
+            None,
+            None,
+        ),
+    )
+
+    _evaluate(
+        _AnalysisDummyModel(cfg),
+        pc_ens,
+        hdc_ens,
+        _AnalysisDummyScorer(),
+        [_single_eval_batch()],
+        cfg,
+        torch.device("cpu"),
+        epoch=4,
+    )
+
+    assert captured["compute_grid_selectivity"] is False
+    assert captured["compute_grid_geometry"] is False
+    assert captured["compute_shuffle_significance"] is False
+    assert captured["compute_split_half"] is True
+    assert captured["compute_hd_selectivity"] is False
+    assert captured["scale_discreteness_num_shuffles"] == 17
+    assert captured["scale_discreteness_bins"] == 9
+    assert captured["scale_discreteness_min_bins"] == 8.0
+    assert captured["scale_discreteness_max_bins"] == 40.0
+    assert captured["scale_gmm_max_components"] == 5
+    assert captured["gridness_threshold"] == 0.29
+
+
+def test_evaluate_accepts_legacy_grid_scores_flag(monkeypatch, tmp_path):
+    """Old configs with compute_grid_scores should map to grid selectivity."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_plot_every = 0
+    cfg.analysis.enabled = True
+    delattr(cfg.analysis, "compute_grid_selectivity")
+    cfg.analysis.compute_grid_scores = False
+    captured = {}
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    def fake_analyze(*args, **kwargs):
+        captured.update(kwargs)
+        return _minimal_analysis_result()
+
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.analyze_bottleneck_spatial_stats",
+        fake_analyze,
+    )
+    monkeypatch.setattr(
+        train_module,
+        "score_ratemaps",
+        lambda *args, **kwargs: (
+            np.zeros(cfg.model.nh_bottleneck),
+            np.zeros(cfg.model.nh_bottleneck),
+            None,
+            None,
+            None,
+        ),
+    )
+
+    _evaluate(
+        _AnalysisDummyModel(cfg),
+        pc_ens,
+        hdc_ens,
+        _AnalysisDummyScorer(),
+        [_single_eval_batch()],
+        cfg,
+        torch.device("cpu"),
+        epoch=4,
+    )
+
+    assert captured["compute_grid_selectivity"] is False

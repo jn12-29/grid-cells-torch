@@ -330,12 +330,43 @@ class Evaluator:
             np.concatenate(collected.analysis_bottleneck_list, axis=0),
             n_direction_bins=getattr(self.cfg.visualization, "directional_bins", 20),
             num_shuffles=int(getattr(analysis_cfg, "num_shuffles", 200)),
+            scale_discreteness_num_shuffles=int(
+                getattr(analysis_cfg, "scale_discreteness_num_shuffles", 500)
+            ),
+            scale_discreteness_bins=int(
+                getattr(analysis_cfg, "scale_discreteness_bins", 13)
+            ),
+            scale_discreteness_min_bins=float(
+                getattr(analysis_cfg, "scale_discreteness_min_bins", 10.0)
+            ),
+            scale_discreteness_max_bins=float(
+                getattr(analysis_cfg, "scale_discreteness_max_bins", 36.0)
+            ),
+            scale_gmm_max_components=int(
+                getattr(analysis_cfg, "scale_gmm_max_components", 8)
+            ),
+            gridness_threshold=float(getattr(analysis_cfg, "gridness_threshold", 0.37)),
             fdr_alpha=float(getattr(analysis_cfg, "fdr_alpha", 0.05)),
             min_shift_fraction=float(getattr(analysis_cfg, "min_shift_fraction", 0.1)),
             split_half_min_corr=float(
                 getattr(analysis_cfg, "split_half_min_corr", 0.3)
             ),
             random_seed=int(getattr(analysis_cfg, "random_seed", 0)),
+            compute_grid_selectivity=bool(
+                getattr(
+                    analysis_cfg,
+                    "compute_grid_selectivity",
+                    getattr(analysis_cfg, "compute_grid_scores", True),
+                )
+            ),
+            compute_grid_geometry=bool(getattr(analysis_cfg, "compute_grid_geometry", True)),
+            compute_shuffle_significance=bool(
+                getattr(analysis_cfg, "compute_shuffle_significance", True)
+            ),
+            compute_split_half=bool(getattr(analysis_cfg, "compute_split_half", True)),
+            compute_hd_selectivity=bool(
+                getattr(analysis_cfg, "compute_hd_selectivity", True)
+            ),
         )
         paths = save_spatial_stats_artifacts(
             result,
@@ -344,10 +375,11 @@ class Evaluator:
         )
         summary = result["summary"]
         self.logger.info(
-            "grid stats saved to %s  grid_fdr=%d  reliable_grid=%d  "
-            "hd_selective=%d  grid_and_hd=%d",
+            "grid stats saved to %s  grid_fdr=%d  grid_threshold=%d  "
+            "reliable_grid=%d  hd_selective=%d  grid_and_hd=%d",
             paths["csv"],
             summary["n_grid_fdr"],
+            summary["n_grid_threshold"],
             summary["n_reliable_grid"],
             summary["n_hd_selective"],
             summary["n_grid_and_hd"],

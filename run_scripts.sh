@@ -41,13 +41,16 @@ CUDA_VISIBLE_DEVICES=0 python train.py --task.targets_type softmax --task.lstm_i
 Note: --task.targets_type normalized uses unit-peak independent activation targets, sigmoid/BCE loss, and sigmoid-activation weighted decoding; softmax remains the recommended analytic-decoding contract.
 
 11. Train with lighter statistical analysis settings
-CUDA_VISIBLE_DEVICES=0 python train.py --analysis.num_shuffles 20 --analysis.max_eval_trajectories 64
+CUDA_VISIBLE_DEVICES=0 python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shuffles 50 --analysis.max_eval_trajectories 64
 
-12. Train with the default cosine learning-rate scheduler made explicit
+12. Train with only per-unit Banino-style grid geometry analysis
+CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_grid_selectivity false --analysis.compute_grid_geometry true --analysis.compute_shuffle_significance false --analysis.compute_split_half false --analysis.compute_hd_selectivity false
+
+13. Train with the default cosine learning-rate scheduler made explicit
 CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
 Monitor
 
-13. Inspect metrics in TensorBoard
+14. Inspect metrics in TensorBoard
 tensorboard --logdir results
 EOF

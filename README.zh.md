@@ -81,7 +81,10 @@ python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
 # 或在快速运行中降低统计分析成本
-python train.py --analysis.num_shuffles 20 --analysis.max_eval_trajectories 64
+python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shuffles 50 --analysis.max_eval_trajectories 64
+
+# 或只运行 per-unit Banino-style grid geometry 分析
+python train.py --analysis.compute_grid_selectivity false --analysis.compute_grid_geometry true --analysis.compute_shuffle_significance false --analysis.compute_split_half false --analysis.compute_hd_selectivity false
 
 # 或显式指定推荐的 scale-invariant 解析解码合同
 python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
@@ -117,7 +120,7 @@ tensorboard --logdir results
 - `eval_plots/rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
 - `eval_plots/hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
 - `eval_videos/eval_animation_epoch_XXXX.mp4`：按顺序拼接后的 eval 轨迹动画；多条轨迹会合成一个视频。
-- `eval_stats/grid_stats_epoch_XXXX.csv`、`eval_stats/grid_stats_epoch_XXXX.npz`、`eval_stats/grid_stats_summary_epoch_XXXX.json`：当 `analysis.enabled=true` 时导出的 bottleneck 单元 grid 显著性、split-half reliability、头朝向选择性和 mixed-selectivity 计数。
+- `eval_stats/grid_stats_epoch_XXXX.csv`、`eval_stats/grid_stats_epoch_XXXX.npz`、`eval_stats/grid_stats_summary_epoch_XXXX.json`：当 `analysis.enabled=true` 时导出的 bottleneck 单元 grid 显著性、Banino-style grid scale、split-half reliability、头朝向选择性和 mixed-selectivity 计数。可用 `analysis.compute_grid_selectivity`、`analysis.compute_grid_geometry`、`analysis.compute_shuffle_significance`、`analysis.compute_split_half` 和 `analysis.compute_hd_selectivity` 单独开关统计模块；关闭的模块仍保留 artifact 字段，并写入 `NaN` 或 `false` 占位值。Grid-scale summary 同时包含所有 finite per-unit scales，限制在 FDR-significant grid units 上的 `grid_fdr_*` 版本，以及限制在 `grid_score_60 >= analysis.gridness_threshold` units 上的 `grid_threshold_*` 版本，包括 Banino-style discreteness shuffle 显著性和 1D GMM/BIC scale-cluster fitting。
 
 ## 🗂️ 仓库结构
 
@@ -159,7 +162,7 @@ grid-cells-torch/
   `grid_cells/analysis` 管理评分与绘图辅助。
   `grid_cells/viz` 管理动画渲染。
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
-- 统计评估默认参数统一放在 `analysis.*` 下；`analysis.max_eval_trajectories` 会限制 shuffle 统计分析保留的 eval 子集大小。
+- 统计评估默认参数统一放在 `analysis.*` 下；`analysis.max_eval_trajectories` 会限制 `spatial_stats` 统计分析保留的 eval 子集大小。
 - 训练始终会先在 epoch 0 执行一次 baseline evaluation，然后每完成 `training.eval_every` 个 epoch 再评估一次。`training.eval_plot_every` 按这些 evaluation 调用计数，包括 epoch 0 baseline，用来决定是否导出 PDF 和动画。
 - 常见覆盖示例：
   `python train.py --task.env_size 2.4 --training.batch_size 32`

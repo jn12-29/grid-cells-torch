@@ -117,6 +117,34 @@ def test_calculate_sac_batch_accepts_single_ratemap():
     assert np.allclose(batch_sac[0], direct_sac)
 
 
+def test_calculate_grid_scale_uses_nearest_six_noncentral_sac_peaks():
+    """Grid scale should be the median distance of the nearest six SAC peaks."""
+    scorer = make_scorer()
+    sac = np.zeros((11, 11), dtype=np.float64)
+    center = np.array([5, 5])
+    peak_offsets = np.array(
+        [
+            [0, 2],
+            [0, -2],
+            [2, 0],
+            [-2, 0],
+            [2, 2],
+            [-2, -2],
+            [0, 4],
+        ]
+    )
+    sac[tuple(center)] = 1.0
+    for index, offset in enumerate(peak_offsets):
+        coord = center + offset
+        sac[coord[0], coord[1]] = 0.9 - index * 0.01
+
+    scale, peak_count = scorer.calculate_grid_scale(sac)
+
+    expected = np.median(np.sort(np.linalg.norm(peak_offsets, axis=1))[:6])
+    assert np.isclose(scale, expected)
+    assert peak_count == 7
+
+
 def test_get_scores_and_plot_from_ratemaps_writes_paginated_pdf(tmp_path):
     """Paginated plotting should write a PDF while keeping all units."""
     rng = np.random.default_rng(2)
