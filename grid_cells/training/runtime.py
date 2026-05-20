@@ -114,7 +114,7 @@ def build_optimizer(model, cfg):
 
 def build_lr_scheduler(optimizer, cfg):
     """Build the configured epoch-level learning-rate scheduler."""
-    scheduler_name = getattr(cfg.training, "lr_scheduler", "none").lower()
+    scheduler_name = getattr(cfg.training, "lr_scheduler", "cosine").lower()
 
     if scheduler_name == "none":
         return None
@@ -244,20 +244,10 @@ def _resolve_split_path(cfg, explicit_path: str, split_name: str, fallback_attr:
 
 
 def resolve_animation_setting(cfg, name: str, default):
-    """Resolve unified animation config, with fallback to legacy eval keys."""
+    """Resolve unified animation config from visualization settings."""
     vis_cfg = getattr(cfg, "visualization", None)
     if vis_cfg is not None and hasattr(vis_cfg, name):
         return getattr(vis_cfg, name)
-
-    legacy_name = {
-        "anim_num_traj": "eval_anim_num_traj",
-        "anim_fps": "eval_anim_fps",
-        "anim_step": "eval_anim_step",
-        "anim_workers": "eval_anim_workers",
-    }[name]
-    training_cfg = getattr(cfg, "training", None)
-    if training_cfg is not None and hasattr(training_cfg, legacy_name):
-        return getattr(training_cfg, legacy_name)
     return default
 
 
@@ -271,7 +261,7 @@ def build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None, g
         fallback_attr="eval_data_path",
     )
 
-    eval_batch_size = getattr(
+    eval_loader_batch_size = getattr(
         cfg.training,
         "eval_loader_batch_size",
         cfg.training.batch_size,
@@ -283,26 +273,26 @@ def build_eval_loader(cfg, logger: logging.Logger, eval_data_path: str = None, g
             cfg,
             data_path=resolved_eval_data_path,
             shuffle=False,
-            batch_size=eval_batch_size,
+            batch_size=eval_loader_batch_size,
         )
 
     if resolved_eval_data_path:
         logger.warning(
             "Eval dataset %s not found; generating one fixed in-memory eval set with %d trajectories",
             resolved_eval_data_path,
-            cfg.training.eval_batch_size,
+            cfg.training.eval_num_samples,
         )
     else:
         logger.info(
             "Generating one fixed in-memory eval set with %d trajectories",
-            cfg.training.eval_batch_size,
+            cfg.training.eval_num_samples,
         )
 
     return get_dataloader_fn(
         cfg,
-        num_samples=cfg.training.eval_batch_size,
+        num_samples=cfg.training.eval_num_samples,
         shuffle=False,
-        batch_size=eval_batch_size,
+        batch_size=eval_loader_batch_size,
     )
 
 

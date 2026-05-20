@@ -32,11 +32,11 @@ training:
   batch_size: 10
   datadir: "data/latest"
   data_path: "data/latest/train.npz"
-  eval_batch_size: 4000         # number of trajectories in the fixed in-memory eval set when no eval file is loaded
+  eval_num_samples: 4000        # number of trajectories in the fixed in-memory eval set when no eval file is loaded
   eval_data_path: "data/latest/eval.npz"
   optimizer: "adamw"            # "adamw" or "rmsprop"
   lr: 1.0e-3
-  lr_scheduler: "cosine"          # "none", "cosine", or "step"
+  lr_scheduler: "cosine"        # default epoch-level scheduler; set "none" to disable, or "step" for StepLR
   lr_min: 1.0e-5                # minimum learning rate for cosine scheduling
   lr_step_size: 50              # epoch interval for step scheduling
   lr_gamma: 0.5                 # learning-rate multiplier for step scheduling
@@ -54,9 +54,9 @@ training:
   use_tqdm: true
   use_tensorboard: true
   tensorboard_log_every: 0     # log scalar metrics every N steps; 0 = auto (derived from hooks)
-  eval_every: 5                # run evaluation every N epochs
+  eval_every: 5                # after baseline epoch-0 eval, run evaluation every N completed epochs
   eval_loader_batch_size: 256  # DataLoader batch size used for eval forward passes (controls memory)
-  eval_plot_every: 1           # export eval PDFs/animation every N eval runs (0 = disable)
+  eval_plot_every: 1           # export eval PDFs/animation every N evaluation calls, including epoch 0 (0 = disable)
   eval_num_workers: 4          # worker processes for eval ratemap scoring and PDF page rendering
   eval_chunk_size: 32          # units per chunk during eval ratemap scoring/rendering
   eval_units_per_page: 128     # neurons shown per page in the rate-map PDF
@@ -72,10 +72,10 @@ visualization:
 
 data_generation:
   num_samples: null          # training trajectories to generate; null = steps_per_epoch × batch_size
-  eval_num_samples: null     # eval trajectories to generate; null = same as num_samples
+  eval_num_samples: null     # eval trajectories to generate; null = training.eval_num_samples
   num_workers: 8             # parallel worker processes for trajectory generation
   progress_every: 4          # print generation progress every N worker batches
-  vis_output: null           # train trajectory preview PDF path; null = auto under output dir
-  anim_output: null          # train trajectory animation MP4 path; null = auto
-  progress_output: null      # train generation progress plot path; null = auto
-  eval_progress_output: null # eval generation progress plot path; null = auto
+  vis_output: null           # file mode train preview PDF path; directory mode uses dataset-local path
+  anim_output: null          # file mode train animation MP4 path; directory mode uses dataset-local path
+  progress_output: null      # file mode train progress plot path; directory mode uses dataset-local path
+  eval_progress_output: null # file mode eval progress plot path; directory mode uses dataset-local path

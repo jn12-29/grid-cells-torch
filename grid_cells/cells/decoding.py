@@ -46,6 +46,20 @@ def is_supported_decode_type(decode_type: str) -> bool:
     return decode_type in VALID_DECODE_TYPES
 
 
+def logits_to_cell_activations(logits: torch.Tensor, ensemble) -> torch.Tensor:
+    """Convert model logits to cell activations matching the ensemble target mode."""
+    if getattr(ensemble, "soft_targets", None) == "normalized":
+        return torch.sigmoid(logits)
+    return F.softmax(logits, dim=-1)
+
+
+def _decode_weights_from_logits(logits: torch.Tensor, ensemble) -> torch.Tensor:
+    """Return normalized cell weights for weighted decoding from model logits."""
+    if getattr(ensemble, "soft_targets", None) == "normalized":
+        return F.softmax(F.logsigmoid(logits), dim=-1)
+    return F.softmax(logits, dim=-1)
+
+
 def _pc_variance_vector_np(ensemble: PlaceCellEnsemble) -> np.ndarray | None:
     variances = np.asarray(ensemble.variances, dtype=np.float64)
     if variances.ndim != 2 or variances.shape[1] != 2:
@@ -166,7 +180,7 @@ def _decode_position_logits_weighted_one_torch(
     logits: torch.Tensor,
     ensemble: PlaceCellEnsemble,
 ) -> torch.Tensor:
-    probs = F.softmax(logits, dim=-1)
+    probs = _decode_weights_from_logits(logits, ensemble)
     means = torch.as_tensor(ensemble.means, dtype=logits.dtype, device=logits.device)
     return torch.matmul(probs, means)
 
@@ -219,7 +233,7 @@ def decode_position_from_pc_activations(
     pc_acts: np.ndarray,
     pc_centers: np.ndarray,
 ) -> np.ndarray:
-    """Decode positions from place-cell activation probabilities via weighted means."""
+    """Decode positions from place-cell activations via normalized weighted means."""
     pc_acts = np.asarray(pc_acts, dtype=np.float32)
     pc_centers = np.asarray(pc_centers, dtype=np.float32)
     if pc_acts.ndim < 2:
@@ -228,7 +242,10 @@ def decode_position_from_pc_activations(
         raise ValueError("pc_centers must have shape (n_pc, 2).")
     if pc_acts.shape[-1] != pc_centers.shape[0]:
         raise ValueError("pc_acts and pc_centers must agree on the number of place cells.")
-    return np.tensordot(pc_acts, pc_centers, axes=([-1], [0])).astype(np.float32)
+    denom = pc_acts.sum(axis=-1, keepdims=True)
+    denom = np.where(denom > 0.0, denom, np.ones_like(denom))
+    weights = pc_acts / denom
+    return np.tensordot(weights, pc_centers, axes=([-1], [0])).astype(np.float32)
 
 
 def _hdc_linear_terms_np(
@@ -283,7 +300,7 @@ def _decode_head_direction_logits_weighted_one_torch(
     logits: torch.Tensor,
     ensemble: HeadDirectionCellEnsemble,
 ) -> torch.Tensor:
-    probs = F.softmax(logits, dim=-1)
+    probs = _decode_weights_from_logits(logits, ensemble)
     means = torch.as_tensor(ensemble.means, dtype=logits.dtype, device=logits.device)
     sin_mean = torch.matmul(probs, torch.sin(means))
     cos_mean = torch.matmul(probs, torch.cos(means))

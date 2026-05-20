@@ -20,6 +20,26 @@ from grid_cells.cells.encoding import EnsembleEncoder
 from grid_cells.data.trajectory_generation import TrajectoryGenerator
 
 
+def motion_params_from_config(cfg) -> dict:
+    """Return trajectory motion parameters from cfg.task when configured."""
+    task_cfg = getattr(cfg, "task", None)
+    if task_cfg is None:
+        return {}
+    mapping = {
+        "dt": "motion_dt",
+        "b": "motion_b",
+        "mv": "motion_mv",
+        "sv": "motion_sv",
+        "mw": "motion_mw",
+        "sw": "motion_sw",
+    }
+    return {
+        param: getattr(task_cfg, attr)
+        for param, attr in mapping.items()
+        if hasattr(task_cfg, attr)
+    }
+
+
 class TrajectoryDataset(Dataset):
     """
     Generates and stores random-walk trajectories in a square environment.
@@ -274,6 +294,7 @@ def get_dataloader(
             env_size=cfg.task.env_size,
             velocity_noise=cfg.task.velocity_noise,
             seed=cfg.task.neurons_seed,
+            **motion_params_from_config(cfg),
         )
 
     if pc_ens is not None and hdc_ens is not None:

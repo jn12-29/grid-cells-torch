@@ -52,8 +52,18 @@ def test_compute_position_mse_matches_decoded_targets():
 
 
 def test_decode_position_from_pc_activations_returns_weighted_mean():
-    """Numpy place-cell probabilities should decode via the same weighted mean rule."""
-    pc_acts = np.array([[[0.25, 0.75]]], dtype=np.float32)
+    """Numpy place-cell activations should decode via normalized weighted mean."""
+    pc_acts = np.array([[[2.0, 6.0]]], dtype=np.float32)
+    pc_centers = np.array([[0.0, 0.0], [2.0, 2.0]], dtype=np.float32)
+
+    decoded = decode_position_from_pc_activations(pc_acts, pc_centers)
+
+    assert np.allclose(decoded, np.array([[[1.5, 1.5]]], dtype=np.float32))
+
+
+def test_decode_position_from_tiny_pc_activations_preserves_relative_weights():
+    """Tiny positive activations should not be clamped before normalization."""
+    pc_acts = np.array([[[1e-12, 3e-12]]], dtype=np.float32)
     pc_centers = np.array([[0.0, 0.0], [2.0, 2.0]], dtype=np.float32)
 
     decoded = decode_position_from_pc_activations(pc_acts, pc_centers)
@@ -141,6 +151,76 @@ def test_decode_position_from_pc_logits_falls_back_for_off_manifold_logits():
     assert torch.allclose(decoded, expected, atol=1e-6)
 
 
+def test_decode_position_from_normalized_pc_logits_uses_sigmoid_weights():
+    """Normalized PC logits should decode from independent sigmoid activations."""
+    ensemble = PlaceCellEnsemble(
+        2,
+        stdev=0.35,
+        pos_min=0.0,
+        pos_max=1.0,
+        seed=0,
+        soft_targets="normalized",
+    )
+    ensemble.means = np.array([[0.0, 0.0], [2.0, 2.0]], dtype=np.float32)
+    logits = torch.tensor([[[0.0, 2.0]]], dtype=torch.float32)
+
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+    sigmoid_weights = torch.sigmoid(logits)
+    expected = (
+        sigmoid_weights / sigmoid_weights.sum(dim=-1, keepdim=True)
+    ) @ torch.from_numpy(ensemble.means)
+    softmax_expected = torch.softmax(logits, dim=-1) @ torch.from_numpy(ensemble.means)
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
+    assert not torch.allclose(decoded, softmax_expected, atol=1e-3)
+
+
+def test_decode_position_from_tiny_normalized_pc_logits_preserves_relative_weights():
+    """Tiny positive sigmoid sums should still decode as normalized weights."""
+    ensemble = PlaceCellEnsemble(
+        2,
+        stdev=0.35,
+        pos_min=0.0,
+        pos_max=1.0,
+        seed=0,
+        soft_targets="normalized",
+    )
+    ensemble.means = np.array([[0.0, 0.0], [2.0, 2.0]], dtype=np.float64)
+    logits = torch.tensor([[[-30.0, -29.0]]], dtype=torch.float32)
+
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+    sigmoid_weights = torch.sigmoid(logits)
+    assert sigmoid_weights.sum() < torch.finfo(logits.dtype).eps
+    expected = (
+        sigmoid_weights / sigmoid_weights.sum(dim=-1, keepdim=True)
+    ) @ torch.as_tensor(ensemble.means, dtype=logits.dtype)
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
+
+
+def test_decode_position_from_underflowed_normalized_pc_logits_preserves_relative_logits():
+    """Saturated negative normalized PC logits should decode from stable sigmoid weights."""
+    ensemble = PlaceCellEnsemble(
+        2,
+        stdev=0.35,
+        pos_min=0.0,
+        pos_max=1.0,
+        seed=0,
+        soft_targets="normalized",
+    )
+    ensemble.means = np.array([[0.0, 0.0], [2.0, 2.0]], dtype=np.float32)
+    logits = torch.tensor([[[-1000.0, -999.0]]], dtype=torch.float32)
+
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+    assert torch.count_nonzero(torch.sigmoid(logits)) == 0
+    expected = torch.softmax(torch.nn.functional.logsigmoid(logits), dim=-1) @ torch.from_numpy(
+        ensemble.means
+    )
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
+    assert not torch.allclose(decoded, torch.zeros_like(decoded), atol=1e-3)
+
+
 def test_decode_position_from_pc_scores_rejects_rank_deficient_geometry():
     """Raw-score analytic decoding should not pseudo-invert unsupported PC layouts."""
     ensemble = PlaceCellEnsemble(2, stdev=0.2, pos_min=-1.0, pos_max=1.0, seed=0)
@@ -195,6 +275,82 @@ def test_compute_head_direction_mae_rad_rejects_squeezed_targets():
 
     with pytest.raises(ValueError, match="target_hd must have shape"):
         compute_head_direction_mae_rad(logits, squeezed_target, [ensemble])
+
+
+def test_decode_head_direction_from_normalized_hdc_logits_uses_sigmoid_weights():
+    """Normalized HDC logits should decode from independent sigmoid activations."""
+    ensemble = HeadDirectionCellEnsemble(
+        2,
+        concentration=4.0,
+        seed=0,
+        soft_targets="normalized",
+    )
+    ensemble.means = np.array([0.0, np.pi / 2.0], dtype=np.float32)
+    logits = torch.tensor([[[0.0, 2.0]]], dtype=torch.float32)
+
+    decoded = decode_head_direction_from_hdc_logits([logits], [ensemble])
+    sigmoid_weights = torch.sigmoid(logits)
+    sigmoid_weights = sigmoid_weights / sigmoid_weights.sum(dim=-1, keepdim=True)
+    means = torch.from_numpy(ensemble.means)
+    expected = torch.atan2(
+        sigmoid_weights @ torch.sin(means),
+        sigmoid_weights @ torch.cos(means),
+    ).unsqueeze(-1)
+    softmax_weights = torch.softmax(logits, dim=-1)
+    softmax_expected = torch.atan2(
+        softmax_weights @ torch.sin(means),
+        softmax_weights @ torch.cos(means),
+    ).unsqueeze(-1)
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
+    assert not torch.allclose(decoded, softmax_expected, atol=1e-3)
+
+
+def test_decode_head_direction_from_underflowed_normalized_hdc_logits_preserves_relative_logits():
+    """Saturated negative normalized HDC logits should decode from stable sigmoid weights."""
+    ensemble = HeadDirectionCellEnsemble(
+        2,
+        concentration=4.0,
+        seed=0,
+        soft_targets="normalized",
+    )
+    ensemble.means = np.array([0.0, np.pi / 2.0], dtype=np.float32)
+    logits = torch.tensor([[[-1000.0, -999.0]]], dtype=torch.float32)
+
+    decoded = decode_head_direction_from_hdc_logits([logits], [ensemble])
+    assert torch.count_nonzero(torch.sigmoid(logits)) == 0
+    weights = torch.softmax(torch.nn.functional.logsigmoid(logits), dim=-1)
+    means = torch.from_numpy(ensemble.means)
+    expected = torch.atan2(
+        weights @ torch.sin(means),
+        weights @ torch.cos(means),
+    ).unsqueeze(-1)
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
+    assert not torch.allclose(decoded, torch.zeros_like(decoded), atol=1e-3)
+
+
+def test_normalized_hdc_targets_are_unit_peak_bce_labels():
+    """Normalized HDC targets should be bounded independent-cell activations."""
+    ensemble = HeadDirectionCellEnsemble(
+        12,
+        concentration=20.0,
+        seed=0,
+        soft_targets="normalized",
+    )
+    headings = np.array(
+        [[[ensemble.means[0]], [0.0], [np.pi]]],
+        dtype=np.float32,
+    )
+
+    targets = ensemble.get_targets(headings)
+    loss = ensemble.loss(torch.full((1, 3, 12), 10.0), targets)
+
+    assert np.isclose(targets[0, 0, 0], 1.0, atol=1e-6)
+    assert targets.min() >= 0.0
+    assert targets.max() <= 1.0
+    assert torch.isfinite(loss)
+    assert loss.item() >= 0.0
 
 
 def test_prepare_dataset_animation_inputs_builds_eval_style_payload(tmp_path):

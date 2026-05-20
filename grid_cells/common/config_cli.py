@@ -37,7 +37,7 @@ CONFIG_OVERRIDE_SPECS = {
         "batch_size": {"type": int},
         "datadir": {"type": str},
         "data_path": {"type": str},
-        "eval_batch_size": {"type": int},
+        "eval_num_samples": {"type": int},
         "eval_data_path": {"type": str},
         "optimizer": {"type": str},
         "lr": {"type": float},

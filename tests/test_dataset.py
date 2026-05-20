@@ -28,6 +28,12 @@ def make_cfg():
             env_size=2.2, seq_len=10, neurons_seed=0,
             targets_type="softmax", lstm_init_type="softmax",
             velocity_noise=[0.0, 0.0, 0.0],
+            motion_dt=0.02,
+            motion_b=0.26,
+            motion_mv=0.1,
+            motion_sv=0.13,
+            motion_mw=0.0,
+            motion_sw=0.52 * np.pi,
         ),
         training=SimpleNamespace(
             batch_size=4, steps_per_epoch=3,
@@ -140,3 +146,15 @@ def test_get_dataloader_defaults_to_shuffled_training_loader():
     loader = get_dataloader(cfg)
 
     assert isinstance(loader.batch_sampler.sampler, RandomSampler)
+
+
+def test_get_dataloader_on_the_fly_uses_motion_config():
+    """On-the-fly generation should honor task.motion_* settings."""
+    cfg = make_cfg()
+    cfg.task.motion_mv = 0.3
+    cfg.task.motion_sv = 1e-6
+
+    loader = get_dataloader(cfg, num_samples=3, shuffle=False, num_workers=0)
+
+    assert np.isclose(loader.dataset._generator.mv, 0.3)
+    assert np.isclose(loader.dataset._generator.sv, 1e-6)

@@ -19,6 +19,8 @@ from typing import Callable, Optional
 import numpy as np
 import torch
 
+from grid_cells.cells.decoding import logits_to_cell_activations
+
 
 @dataclass
 class EvaluationHooks:
@@ -175,7 +177,10 @@ class Evaluator:
 
                 if save_pdf:
                     hd_np = batch["target_hd"].detach().cpu().numpy()
-                    hdc_np = torch.softmax(hdc_logits[0], dim=-1).detach().cpu().numpy()
+                    hdc_np = logits_to_cell_activations(
+                        hdc_logits[0],
+                        self.hdc_ens[0],
+                    ).detach().cpu().numpy()
                     hd_list.append(hd_np.reshape(-1))
                     hdc_list.append(hdc_np.reshape(-1, hdc_np.shape[-1]))
 
@@ -204,13 +209,25 @@ class Evaluator:
         """Prepare the first-batch animation payload used for eval exports."""
         n_anim = min(num_anim_traj, batch["target_pos"].shape[0])
         pred_pos_batch = self.hooks.decode_position_from_pc_logits(pc_logits, self.pc_ens)
-        pc_probs = torch.cat([torch.softmax(logits, dim=-1) for logits in pc_logits], dim=-1)
-        hdc_probs = torch.cat([torch.softmax(logits, dim=-1) for logits in hdc_logits], dim=-1)
+        pc_acts = torch.cat(
+            [
+                logits_to_cell_activations(logits, ensemble)
+                for logits, ensemble in zip(pc_logits, self.pc_ens)
+            ],
+            dim=-1,
+        )
+        hdc_acts = torch.cat(
+            [
+                logits_to_cell_activations(logits, ensemble)
+                for logits, ensemble in zip(hdc_logits, self.hdc_ens)
+            ],
+            dim=-1,
+        )
         return {
             "target_pos": batch["target_pos"][:n_anim].detach().cpu().numpy(),
             "pred_pos": pred_pos_batch[:n_anim].detach().cpu().numpy(),
-            "pc_acts": pc_probs[:n_anim].detach().cpu().numpy(),
-            "hdc_acts": hdc_probs[:n_anim].detach().cpu().numpy(),
+            "pc_acts": pc_acts[:n_anim].detach().cpu().numpy(),
+            "hdc_acts": hdc_acts[:n_anim].detach().cpu().numpy(),
         }
 
     def _score_and_export(self, ratemaps, collected: EvaluationCollection, save_pdf: bool, epoch: int):

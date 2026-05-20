@@ -21,7 +21,7 @@ python generate_data.py --data_generation.num_samples 4000 --train_only
 5. Generate datasets with config-backed defaults overridden from the CLI
 python generate_data.py --task.seq_len 800 --data_generation.num_workers 4 --visualization.anim_fps 30
 
-6. Legacy single-file generation with explicit output paths
+6. File-mode generation with explicit output paths
 python generate_data.py --output data/train_small.npz --eval_output data/eval_small.npz
 
 Train
@@ -38,7 +38,9 @@ CUDA_VISIBLE_DEVICES=0 python train.py --training.epochs 20 --training.eval_ever
 10. Train with the recommended scale-invariant analytic decoding contract made explicit
 CUDA_VISIBLE_DEVICES=0 python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
 
-11. Train with cosine learning-rate scheduling
+Note: --task.targets_type normalized uses unit-peak independent activation targets, sigmoid/BCE loss, and sigmoid-activation weighted decoding; softmax remains the recommended analytic-decoding contract.
+
+11. Train with the default cosine learning-rate scheduler made explicit
 CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
 Monitor

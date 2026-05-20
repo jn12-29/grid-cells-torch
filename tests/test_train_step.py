@@ -53,6 +53,12 @@ def make_cfg():
             pc_scale=[0.35],
             n_hdc=[4],
             hdc_concentration=[20.0],
+            motion_dt=0.02,
+            motion_b=0.26,
+            motion_mv=0.1,
+            motion_sv=0.13,
+            motion_mw=0.0,
+            motion_sw=0.52 * np.pi,
         ),
         model=SimpleNamespace(
             nh_lstm=16,
@@ -200,9 +206,11 @@ def test_build_optimizer_can_switch_to_adamw():
     assert optimizer.defaults["eps"] == 1e-6
 
 
-def test_build_lr_scheduler_defaults_to_none():
-    """Scheduler builder should preserve fixed learning-rate training by default."""
+def test_build_lr_scheduler_defaults_to_cosine_when_field_missing():
+    """Scheduler builder should default missing lr_scheduler to cosine."""
     cfg = make_cfg()
+    delattr(cfg.training, "lr_scheduler")
+    cfg.training.epochs = 4
     pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
     hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
     model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
@@ -210,7 +218,7 @@ def test_build_lr_scheduler_defaults_to_none():
 
     scheduler = build_lr_scheduler(optimizer, cfg)
 
-    assert scheduler is None
+    assert isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
 
 
 def test_build_lr_scheduler_supports_cosine():
@@ -802,7 +810,7 @@ def test_build_eval_loader_prefers_configured_eval_data_path(tmp_path, monkeypat
     """Eval loading should reuse the configured eval split when the file exists."""
     cfg = make_cfg()
     cfg.training.datadir = None
-    cfg.training.eval_batch_size = 7
+    cfg.training.eval_num_samples = 7
     cfg.training.eval_data_path = str(tmp_path / "eval.npz")
     cfg.training.batch_size = 4
     calls = {}
@@ -829,7 +837,7 @@ def test_build_eval_loader_prefers_configured_eval_data_path(tmp_path, monkeypat
 def test_build_eval_loader_prefers_datadir_split(tmp_path, monkeypatch):
     """Eval loading should prefer <datadir>/eval.npz over legacy eval_data_path."""
     cfg = make_cfg()
-    cfg.training.eval_batch_size = 7
+    cfg.training.eval_num_samples = 7
     cfg.training.eval_data_path = "data/legacy-eval.npz"
     cfg.training.datadir = str(tmp_path)
     calls = {}
@@ -856,7 +864,7 @@ def test_build_eval_loader_prefers_datadir_split(tmp_path, monkeypatch):
 def test_build_eval_loader_explicit_path_overrides_datadir(tmp_path, monkeypatch):
     """Explicit eval_data_path should take precedence over training.datadir."""
     cfg = make_cfg()
-    cfg.training.eval_batch_size = 7
+    cfg.training.eval_num_samples = 7
     cfg.training.datadir = str(tmp_path)
     explicit_path = tmp_path / "explicit-eval.npz"
     datadir_path = tmp_path / "eval.npz"
@@ -884,7 +892,7 @@ def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
     """Missing eval files should fall back to one fixed generated eval dataset."""
     cfg = make_cfg()
     cfg.training.datadir = None
-    cfg.training.eval_batch_size = 7
+    cfg.training.eval_num_samples = 7
     cfg.training.eval_data_path = "data/missing-eval.npz"
     calls = {}
 
@@ -898,6 +906,27 @@ def test_build_eval_loader_falls_back_to_fixed_generated_set(monkeypatch):
 
     assert loader == "generated-eval-loader"
     assert calls["kwargs"] == {"num_samples": 7, "shuffle": False, "batch_size": 4}
+
+
+def test_build_eval_loader_uses_eval_loader_batch_size(monkeypatch):
+    """Eval loader batch size should control forward-pass batch size only."""
+    cfg = make_cfg()
+    cfg.training.datadir = None
+    cfg.training.eval_num_samples = 7
+    cfg.training.eval_loader_batch_size = 3
+    cfg.training.eval_data_path = "data/missing-eval.npz"
+    calls = {}
+
+    def fake_get_dataloader(cfg_arg, **kwargs):
+        calls["kwargs"] = kwargs
+        return "generated-eval-loader"
+
+    monkeypatch.setattr(train_module, "get_dataloader", fake_get_dataloader)
+
+    loader = _build_eval_loader(cfg, logging.getLogger("test_eval_loader_batch_size"))
+
+    assert loader == "generated-eval-loader"
+    assert calls["kwargs"] == {"num_samples": 7, "shuffle": False, "batch_size": 3}
 
 
 def test_build_train_loader_prefers_configured_data_path(tmp_path, monkeypatch):

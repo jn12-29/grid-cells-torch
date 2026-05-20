@@ -74,7 +74,7 @@ class TrainingSession:
 
         logger.info("Using device: %s", device)
         logger.info("Optimizer: %s", getattr(self.cfg.training, "optimizer", "rmsprop"))
-        logger.info("Learning-rate scheduler: %s", getattr(self.cfg.training, "lr_scheduler", "none"))
+        logger.info("Learning-rate scheduler: %s", getattr(self.cfg.training, "lr_scheduler", "cosine"))
         logger.info("Run directory: %s", self.cfg.training.save_dir)
         logger.info(
             "Progress bar enabled: %s",

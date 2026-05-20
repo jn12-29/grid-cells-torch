@@ -18,18 +18,16 @@ def parse_train_args() -> argparse.Namespace:
     parser.add_argument(
         "--data_path",
         default=None,
-        help="Path to a pre-generated .npz trajectory file "
-        "(created by generate_data.py). "
-        "Defaults to training.data_path from config; when that file is "
-        "missing, train.py falls back to generating trajectories on-the-fly "
-        "every epoch.",
+        help="Explicit train split .npz path. When omitted, train.py first "
+        "checks training.datadir/train.npz, then falls back to "
+        "training.data_path, then on-the-fly generation.",
     )
     parser.add_argument(
         "--eval_data_path",
         default=None,
-        help="Path to a fixed .npz evaluation dataset. "
-        "Defaults to training.eval_data_path from config; when that file is "
-        "missing, train.py falls back to generating one fixed eval set in memory.",
+        help="Explicit eval split .npz path. When omitted, train.py first "
+        "checks training.datadir/eval.npz, then falls back to "
+        "training.eval_data_path, then one fixed in-memory eval set.",
     )
     register_config_overrides(
         parser,

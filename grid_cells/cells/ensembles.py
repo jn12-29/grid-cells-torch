@@ -1,7 +1,7 @@
 """Cell-ensemble definitions for place and head-direction supervision.
 
-These classes reproduce the probabilistic target encodings used by the original
-DeepMind codebase while keeping target generation in NumPy and loss evaluation
+These classes implement probabilistic and independent-activation target
+encodings while keeping target generation in NumPy and loss evaluation
 compatible with PyTorch tensors.
 
 Usage:
@@ -116,7 +116,7 @@ class CellEnsemble(ABC):
             batch, seq = x.shape[0], x.shape[1]
             return np.zeros((batch, seq, self.n_cells), dtype=np.float32)
         elif mode == "normalized":
-            logpdf = self.unnor_logpdf(x)
+            logpdf = self.activation_logpdf(x)
             return np.exp(logpdf)
         elif mode == "softmax":
             return self._softmax(self.log_posterior(x))
@@ -137,6 +137,10 @@ class CellEnsemble(ABC):
             numpy array of shape (batch, seq_len, n_cells).
         """
         return self._apply_mode(x, self.soft_targets)
+
+    def activation_logpdf(self, x):
+        """Return log activations for independent-cell normalized targets."""
+        return self.unnor_logpdf(x)
 
     def get_init(self, x):
         """Compute initial cell activations for LSTM initialisation.
@@ -169,7 +173,7 @@ class CellEnsemble(ABC):
 
         if self.soft_targets == "normalized":
             # 'normalized' treats each cell as independent binary output (multi-label).
-            # Targets are exp(unnormalized log-pdf); labels are smoothed toward 0.5.
+            # Targets are unit-peak activations; labels are smoothed toward 0.5.
             # Sigmoid cross-entropy with label smoothing
             smoothing = 1e-2
             labels = (1.0 - smoothing) * targets_t + smoothing * 0.5
@@ -288,4 +292,10 @@ class HeadDirectionCellEnsemble(CellEnsemble):
         # Broadcasting: (batch, seq, 1) vs (n_cells,) → (batch, seq, n_cells)
         return self.kappa[np.newaxis, np.newaxis, :] * np.cos(
             x - self.means[np.newaxis, np.newaxis, :]
+        )
+
+    def activation_logpdf(self, x):
+        """Log activation with unit peak for normalized HDC targets."""
+        return self.kappa[np.newaxis, np.newaxis, :] * (
+            np.cos(x - self.means[np.newaxis, np.newaxis, :]) - 1.0
         )

@@ -44,7 +44,7 @@ def _make_cfg(train_path: str, eval_path: str = None):
         training=SimpleNamespace(
             steps_per_epoch=2,
             batch_size=3,
-            eval_batch_size=4,
+            eval_num_samples=4,
             data_path=train_path,
             eval_data_path=eval_path,
         ),
@@ -73,24 +73,7 @@ def _make_args(**overrides):
     defaults = dict(
         config="config.yaml",
         output=None,
-        num_samples=None,
-        eval_num_samples=None,
-        seq_len=None,
-        env_size=None,
-        seed=None,
         eval_seed=None,
-        vis_output=None,
-        anim_output=None,
-        progress_output=None,
-        eval_progress_output=None,
-        anim_num_traj=None,
-        anim_fps=None,
-        anim_step=None,
-        anim_workers=None,
-        num_workers=None,
-        progress_every=None,
-        spatial_bins=None,
-        directional_bins=None,
         output_dir=None,
         tag=None,
         visualize=False,
@@ -104,8 +87,6 @@ def _make_args(**overrides):
         task__targets_type=None,
         task__lstm_init_type=None,
         task__decode_type=None,
-        training__data_path=None,
-        training__eval_data_path=None,
         visualization__spatial_bins=None,
         visualization__directional_bins=None,
         visualization__anim_num_traj=None,
@@ -236,72 +217,56 @@ def test_generate_dataset_file_can_write_animation(tmp_path, monkeypatch):
     assert calls == [(6, str(anim_path), 1, 1, 12, 3, 2, 5)]
 
 
-def test_resolve_visualization_bins_prefers_cli_then_config():
-    """CLI overrides should win over config for visualization bins."""
+def test_resolve_visualization_bins_uses_config():
+    """Visualization bins should come from config."""
     cfg = SimpleNamespace(
         visualization=SimpleNamespace(spatial_bins=41, directional_bins=17)
     )
-    args = SimpleNamespace(spatial_bins=75, directional_bins=None)
 
-    resolved = generate_data._resolve_visualization_bins(cfg, args)
+    resolved = generate_data._resolve_visualization_bins(cfg)
 
-    assert resolved == {"spatial_bins": 75, "directional_bins": 17}
+    assert resolved == {"spatial_bins": 41, "directional_bins": 17}
 
 
 def test_resolve_visualization_bins_rejects_non_positive_values():
     """Visualization bins must remain positive integers."""
     cfg = SimpleNamespace(visualization=SimpleNamespace(spatial_bins=0))
-    args = SimpleNamespace(spatial_bins=None, directional_bins=None)
 
     with pytest.raises(ValueError, match="spatial_bins must be a positive integer"):
-        generate_data._resolve_visualization_bins(cfg, args)
+        generate_data._resolve_visualization_bins(cfg)
 
 
 def test_resolve_visualization_bins_falls_back_to_safe_defaults():
     """Visualization bins should fall back to safe defaults for older configs."""
     cfg = SimpleNamespace(visualization=SimpleNamespace(spatial_bins=32))
-    args = SimpleNamespace(spatial_bins=None, directional_bins=None)
 
-    resolved = generate_data._resolve_visualization_bins(cfg, args)
+    resolved = generate_data._resolve_visualization_bins(cfg)
 
     assert resolved == {"spatial_bins": 32, "directional_bins": 20}
 
 
-def test_resolve_animation_settings_prefers_cli_then_config_then_legacy():
-    """Animation settings should use CLI overrides, then visualization, then legacy eval keys."""
+def test_resolve_animation_settings_uses_config_then_safe_defaults():
+    """Animation settings should use visualization config and safe defaults."""
     cfg = SimpleNamespace(
         visualization=SimpleNamespace(anim_num_traj=4, anim_fps=24, anim_step=5),
-        training=SimpleNamespace(eval_anim_workers=7),
-    )
-    args = SimpleNamespace(
-        anim_num_traj=2,
-        anim_fps=None,
-        anim_step=None,
-        anim_workers=None,
     )
 
-    resolved = generate_data._resolve_animation_settings(cfg, args)
+    resolved = generate_data._resolve_animation_settings(cfg)
 
     assert resolved == {
-        "anim_num_traj": 2,
+        "anim_num_traj": 4,
         "anim_fps": 24,
         "anim_step": 5,
-        "anim_workers": 7,
+        "anim_workers": 4,
     }
 
 
 def test_resolve_animation_settings_rejects_non_positive_values():
     """Animation settings must remain positive integers."""
-    cfg = SimpleNamespace(visualization=SimpleNamespace(anim_step=0), training=SimpleNamespace())
-    args = SimpleNamespace(
-        anim_num_traj=None,
-        anim_fps=None,
-        anim_step=None,
-        anim_workers=None,
-    )
+    cfg = SimpleNamespace(visualization=SimpleNamespace(anim_step=0))
 
     with pytest.raises(ValueError, match="anim_step must be a positive integer"):
-        generate_data._resolve_animation_settings(cfg, args)
+        generate_data._resolve_animation_settings(cfg)
 
 
 def test_visualize_animation_prepares_eval_style_inputs(tmp_path, monkeypatch):
@@ -383,8 +348,8 @@ def test_visualize_animation_prepares_eval_style_inputs(tmp_path, monkeypatch):
     assert captured["pred_label"] == "decoded"
 
 
-def test_main_explicit_outputs_use_legacy_single_file_mode(tmp_path, monkeypatch):
-    """Explicit output paths should preserve the legacy single-file mode."""
+def test_main_explicit_outputs_use_file_mode(tmp_path, monkeypatch):
+    """Explicit output paths should use file mode."""
     train_path = tmp_path / "train.npz"
     eval_path = tmp_path / "eval.npz"
     cfg = _make_cfg(str(tmp_path / "config-train.npz"), str(tmp_path / "config-eval.npz"))
@@ -404,11 +369,67 @@ def test_main_explicit_outputs_use_legacy_single_file_mode(tmp_path, monkeypatch
     assert '"num_samples": 4' in eval_meta
 
 
+def test_main_file_mode_uses_configured_artifact_paths(tmp_path, monkeypatch):
+    """Configured artifact paths should apply to explicit file mode."""
+    train_path = tmp_path / "train.npz"
+    eval_path = tmp_path / "eval.npz"
+    vis_path = tmp_path / "custom-vis.pdf"
+    anim_path = tmp_path / "custom-traj.mp4"
+    progress_path = tmp_path / "custom-progress.png"
+    eval_progress_path = tmp_path / "custom-eval-progress.png"
+    cfg = _make_cfg(str(tmp_path / "config-train.npz"), str(tmp_path / "config-eval.npz"))
+    cfg.data_generation.vis_output = str(vis_path)
+    cfg.data_generation.anim_output = str(anim_path)
+    cfg.data_generation.progress_output = str(progress_path)
+    cfg.data_generation.eval_progress_output = str(eval_progress_path)
+
+    def fake_visualize(dataset, save_path, spatial_bins=32, directional_bins=20):
+        assert save_path == str(vis_path)
+        vis_path.write_bytes(b"fake-pdf")
+
+    def fake_visualize_animation(
+        dataset,
+        save_path,
+        pc_ensembles,
+        hdc_ensembles,
+        fps=20,
+        max_trajectories=4,
+        step=4,
+        num_workers=8,
+    ):
+        assert save_path == str(anim_path)
+        anim_path.write_bytes(b"fake-mp4")
+
+    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
+    monkeypatch.setattr(generate_data, "visualize", fake_visualize)
+    monkeypatch.setattr(generate_data, "visualize_animation", fake_visualize_animation)
+    monkeypatch.setattr(
+        generate_data,
+        "parse_args",
+        lambda: _make_args(
+            output=str(train_path),
+            eval_output=str(eval_path),
+            visualize=True,
+            animate=True,
+            visualize_progress=True,
+        ),
+    )
+
+    generate_data.main()
+
+    assert train_path.exists()
+    assert eval_path.exists()
+    assert vis_path.exists()
+    assert anim_path.exists()
+    assert progress_path.exists()
+    assert eval_progress_path.exists()
+
+
 def test_main_explicit_train_output_does_not_touch_latest_or_default_eval(
     tmp_path,
     monkeypatch,
 ):
-    """Single-file mode with only --output should generate only train and avoid data/latest."""
+    """File mode with only --output should generate only train and avoid data/latest."""
     train_path = tmp_path / "train-only-single.npz"
     cfg = _make_cfg(
         str(tmp_path / "config-train.npz"),
@@ -455,248 +476,46 @@ def test_main_rejects_eval_output_without_explicit_train_output(tmp_path, monkey
         generate_data.main()
 
 
-def test_main_rejects_training_eval_path_override_without_explicit_train_output(
+def test_generate_data_rejects_training_eval_path_override(
     tmp_path,
     monkeypatch,
 ):
-    """training.eval_data_path override alone should require explicit train output too."""
+    """training.eval_data_path is not a generate_data CLI override."""
     eval_path = tmp_path / "eval-only.npz"
-    cfg = _make_cfg(
-        str(tmp_path / "data" / "latest" / "train.npz"),
-        str(tmp_path / "config-eval.npz"),
-    )
+    monkeypatch.setattr(sys, "argv", ["generate_data.py", "--training.eval_data_path", str(eval_path)])
 
-    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(
-        generate_data,
-        "parse_args",
-        lambda: _make_args(training__eval_data_path=str(eval_path)),
-    )
-
-    with pytest.raises(ValueError, match="Explicit eval output requires an explicit train output"):
-        generate_data.main()
+    with pytest.raises(SystemExit):
+        generate_data.parse_args()
 
 
-def test_main_accepts_legacy_single_file_cli_arguments(tmp_path, monkeypatch):
-    """Legacy flat CLI flags should still parse and drive single-file outputs."""
-    train_path = tmp_path / "legacy-train.npz"
-    eval_path = tmp_path / "legacy-eval.npz"
-    vis_path = tmp_path / "legacy-vis.pdf"
-    anim_path = tmp_path / "legacy-traj.mp4"
-    progress_path = tmp_path / "legacy-progress.png"
-    cfg = _make_cfg(str(tmp_path / "config-train.npz"), str(tmp_path / "config-eval.npz"))
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--num_samples",
+        "--eval_num_samples",
+        "--seq_len",
+        "--env_size",
+        "--seed",
+        "--vis_output",
+        "--anim_output",
+        "--progress_output",
+        "--eval_progress_output",
+        "--anim_num_traj",
+        "--anim_fps",
+        "--anim_step",
+        "--anim_workers",
+        "--num_workers",
+        "--progress_every",
+        "--spatial_bins",
+        "--directional_bins",
+    ],
+)
+def test_generate_data_rejects_legacy_flat_config_flags(monkeypatch, flag):
+    """Config-backed generation values must use section.key overrides."""
+    monkeypatch.setattr(sys, "argv", ["generate_data.py", flag, "5"])
 
-    def fake_visualize(dataset, save_path, spatial_bins=32, directional_bins=20):
-        assert save_path == str(vis_path)
-        vis_path.write_bytes(b"fake-pdf")
-
-    def fake_visualize_animation(
-        dataset,
-        save_path,
-        pc_ensembles,
-        hdc_ensembles,
-        fps=20,
-        max_trajectories=4,
-        step=4,
-        num_workers=8,
-    ):
-        assert save_path == str(anim_path)
-        anim_path.write_bytes(b"fake-mp4")
-
-    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(generate_data, "visualize", fake_visualize)
-    monkeypatch.setattr(generate_data, "visualize_animation", fake_visualize_animation)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "generate_data.py",
-            "--output",
-            str(train_path),
-            "--eval_output",
-            str(eval_path),
-            "--num_samples",
-            "5",
-            "--eval_num_samples",
-            "2",
-            "--seq_len",
-            "7",
-            "--env_size",
-            "3.0",
-            "--seed",
-            "11",
-            "--vis_output",
-            str(vis_path),
-            "--anim_output",
-            str(anim_path),
-            "--progress_output",
-            str(progress_path),
-            "--visualize",
-            "--animate",
-            "--visualize_progress",
-        ],
-    )
-
-    generate_data.main()
-
-    assert train_path.exists()
-    assert eval_path.exists()
-    assert vis_path.exists()
-    assert anim_path.exists()
-    assert progress_path.exists()
-    train_meta = np.load(train_path, allow_pickle=False)["meta"].item()
-    eval_meta = np.load(eval_path, allow_pickle=False)["meta"].item()
-    train_data = np.load(train_path, allow_pickle=False)
-    eval_data = np.load(eval_path, allow_pickle=False)
-    assert '"num_samples": 5' in train_meta
-    assert '"num_samples": 2' in eval_meta
-    assert '"seq_len": 7' in train_meta
-    assert '"seq_len": 7' in eval_meta
-    assert '"env_size": 3.0' in train_meta
-    assert '"env_size": 3.0' in eval_meta
-
-    ref_train_path = tmp_path / "ref-train.npz"
-    ref_eval_path = tmp_path / "ref-eval.npz"
-    generate_data.generate_dataset_file(
-        output_path=str(ref_train_path),
-        num_samples=5,
-        seq_len=7,
-        env_size=3.0,
-        velocity_noise=[0.0, 0.0, 0.0],
-        seed=11,
-    )
-    generate_data.generate_dataset_file(
-        output_path=str(ref_eval_path),
-        num_samples=2,
-        seq_len=7,
-        env_size=3.0,
-        velocity_noise=[0.0, 0.0, 0.0],
-        seed=12,
-    )
-    ref_train_data = np.load(ref_train_path, allow_pickle=False)
-    ref_eval_data = np.load(ref_eval_path, allow_pickle=False)
-    assert np.array_equal(train_data["target_pos"], ref_train_data["target_pos"])
-    assert np.array_equal(eval_data["target_pos"], ref_eval_data["target_pos"])
-
-
-def test_main_legacy_cli_visualization_bins_are_applied(tmp_path, monkeypatch):
-    """Legacy flat visualization bin flags should reach the visualize callback."""
-    train_path = tmp_path / "legacy-bins-train.npz"
-    cfg = _make_cfg(str(tmp_path / "config-train.npz"), None)
-    captured = {}
-
-    def fake_visualize(dataset, save_path, spatial_bins=32, directional_bins=20):
-        captured["save_path"] = save_path
-        captured["spatial_bins"] = spatial_bins
-        captured["directional_bins"] = directional_bins
-        tmp_path.joinpath("legacy-bins-vis.pdf").write_bytes(b"fake-pdf")
-
-    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(generate_data, "visualize", fake_visualize)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "generate_data.py",
-            "--output",
-            str(train_path),
-            "--train_only",
-            "--visualize",
-            "--spatial_bins",
-            "41",
-            "--directional_bins",
-            "23",
-        ],
-    )
-
-    generate_data.main()
-
-    assert captured["save_path"] == str(tmp_path / "legacy-bins-train_vis.pdf")
-    assert captured["spatial_bins"] == 41
-    assert captured["directional_bins"] == 23
-
-
-def test_main_legacy_cli_animation_settings_are_applied(tmp_path, monkeypatch):
-    """Legacy flat animation flags should reach the animation callback."""
-    train_path = tmp_path / "legacy-anim-train.npz"
-    cfg = _make_cfg(str(tmp_path / "config-train.npz"), None)
-    captured = {}
-
-    def fake_visualize_animation(
-        dataset,
-        save_path,
-        pc_ensembles,
-        hdc_ensembles,
-        fps=20,
-        max_trajectories=4,
-        step=4,
-        num_workers=8,
-    ):
-        captured["save_path"] = save_path
-        captured["fps"] = fps
-        captured["max_trajectories"] = max_trajectories
-        captured["step"] = step
-        captured["num_workers"] = num_workers
-        tmp_path.joinpath("legacy-anim-traj.mp4").write_bytes(b"fake-mp4")
-
-    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(generate_data, "visualize_animation", fake_visualize_animation)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "generate_data.py",
-            "--output",
-            str(train_path),
-            "--train_only",
-            "--animate",
-            "--anim_num_traj",
-            "3",
-            "--anim_fps",
-            "12",
-            "--anim_step",
-            "2",
-            "--anim_workers",
-            "5",
-        ],
-    )
-
-    generate_data.main()
-
-    assert captured["save_path"] == str(tmp_path / "legacy-anim-train_traj.mp4")
-    assert captured["fps"] == 12
-    assert captured["max_trajectories"] == 3
-    assert captured["step"] == 2
-    assert captured["num_workers"] == 5
-
-
-def test_main_training_section_overrides_use_legacy_single_file_mode(
-    tmp_path,
-    monkeypatch,
-):
-    """training.* CLI overrides should trigger the legacy single-file mode."""
-    train_path = tmp_path / "override-train.npz"
-    eval_path = tmp_path / "override-eval.npz"
-    cfg = _make_cfg(str(tmp_path / "config-train.npz"), str(tmp_path / "config-eval.npz"))
-    monkeypatch.chdir(tmp_path)
-
-    monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
-    monkeypatch.setattr(
-        generate_data,
-        "parse_args",
-        lambda: _make_args(
-            training__data_path=str(train_path),
-            training__eval_data_path=str(eval_path),
-        ),
-    )
-
-    generate_data.main()
-
-    train_meta = np.load(train_path, allow_pickle=False)["meta"].item()
-    eval_meta = np.load(eval_path, allow_pickle=False)["meta"].item()
-    assert '"num_samples": 6' in train_meta
-    assert '"num_samples": 4' in eval_meta
-    assert not (tmp_path / "data" / "datasets").exists()
+    with pytest.raises(SystemExit):
+        generate_data.parse_args()
 
 
 def test_main_directory_mode_defaults_to_dataset_id_directory(tmp_path, monkeypatch):
@@ -1041,7 +860,7 @@ def test_main_directory_mode_latest_falls_back_to_copy_when_symlink_fails(
 
 
 def test_main_directory_mode_ignores_legacy_artifact_paths(tmp_path, monkeypatch):
-    """Directory mode should ignore legacy artifact path flags and keep outputs inside output_dir."""
+    """Directory mode should ignore configured artifact paths and keep outputs inside output_dir."""
     cfg = _make_cfg(
         str(tmp_path / "config-train.npz"),
         str(tmp_path / "config-eval.npz"),
@@ -1051,6 +870,10 @@ def test_main_directory_mode_ignores_legacy_artifact_paths(tmp_path, monkeypatch
     outside_anim = tmp_path / "outside-traj.mp4"
     outside_progress = tmp_path / "outside-progress.png"
     outside_eval_progress = tmp_path / "outside-eval-progress.png"
+    cfg.data_generation.vis_output = str(outside_vis)
+    cfg.data_generation.anim_output = str(outside_anim)
+    cfg.data_generation.progress_output = str(outside_progress)
+    cfg.data_generation.eval_progress_output = str(outside_eval_progress)
     captured = {}
 
     def fake_visualize(dataset, save_path, spatial_bins=32, directional_bins=20):
@@ -1081,10 +904,6 @@ def test_main_directory_mode_ignores_legacy_artifact_paths(tmp_path, monkeypatch
             visualize=True,
             animate=True,
             visualize_progress=True,
-            vis_output=str(outside_vis),
-            anim_output=str(outside_anim),
-            progress_output=str(outside_progress),
-            eval_progress_output=str(outside_eval_progress),
         ),
     )
 
@@ -1149,7 +968,7 @@ def test_main_can_generate_train_and_eval_splits(tmp_path, monkeypatch):
 
 
 def test_main_rejects_same_train_and_eval_output_paths(tmp_path, monkeypatch):
-    """Legacy single-file mode should reject shared train/eval output paths."""
+    """File mode should reject shared train/eval output paths."""
     shared_path = tmp_path / "shared.npz"
     cfg = _make_cfg(str(shared_path), str(shared_path))
 
@@ -1182,7 +1001,7 @@ def test_main_rejects_train_only_with_eval_output(tmp_path, monkeypatch):
 
 
 def test_main_rejects_train_only_with_training_eval_path_override(tmp_path, monkeypatch):
-    """train_only should also reject an explicit training.eval_data_path override."""
+    """train_only should reject an explicit eval output."""
     train_path = tmp_path / "train.npz"
     eval_path = tmp_path / "eval.npz"
     cfg = _make_cfg(str(train_path), str(eval_path))
@@ -1193,7 +1012,7 @@ def test_main_rejects_train_only_with_training_eval_path_override(tmp_path, monk
         "parse_args",
         lambda: _make_args(
             train_only=True,
-            training__eval_data_path=str(eval_path),
+            eval_output=str(eval_path),
         ),
     )
 

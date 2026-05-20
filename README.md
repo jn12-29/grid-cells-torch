@@ -15,9 +15,7 @@ README-safe assets are mirrored under `docs/assets/readme/`.
 | `grid_score_60 max` | `1.3284` |
 | `grid_score_90 max` | `1.5351` |
 
-[![Epoch 12 evaluation animation](docs/assets/readme/eval_animation_epoch_0012_thumb.png)](docs/assets/readme/eval_animation_epoch_0012.mp4)
-
-Video: `docs/assets/readme/eval_animation_epoch_0012.mp4`
+![Epoch 12 evaluation preview](docs/assets/readme/eval_animation_epoch_0012_thumb.png)
 
 [PDF 1](docs/assets/readme/rates_and_sac_epoch_0012.pdf) | [PDF 2](docs/assets/readme/hdc_tuning_epoch_0012.pdf)
 
@@ -62,7 +60,7 @@ python generate_data.py --animate --visualization.anim_step 2
 # override data-generation defaults from config.yaml
 python generate_data.py --data_generation.num_samples 5000 --task.seq_len 800
 
-# legacy single-file mode is still available with explicit output paths
+# explicit file mode is available with output paths
 python generate_data.py --output data/train_small.npz --eval_output data/eval_small.npz
 
 # train with the generated dataset
@@ -74,7 +72,7 @@ python train.py --training.checkpoint_every 5
 # or train with a specific dataset directory containing train.npz and eval.npz
 python train.py --training.datadir data/datasets/<dataset-id>
 
-# or enable an epoch-level learning-rate scheduler
+# or make the default epoch-level learning-rate scheduler explicit
 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
 # or override the shared animation config for eval videos
@@ -102,6 +100,8 @@ Directory mode updates `data/latest/train.npz`, `data/latest/eval.npz`, and `dat
 
 If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly trajectory generation.
 
+`task.targets_type=normalized` uses independent cell-activation targets instead of a population probability distribution; both PC and HDC normalized targets have unit peak activations, train with sigmoid/BCE loss, and decode with sigmoid-activation weighted means. The default and recommended analytic-decoding contract remains `targets_type=softmax`.
+
 ## 📦 Outputs
 
 - `train.log`: compact training log.
@@ -111,7 +111,6 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 - `checkpoints/checkpoint_final.pt`: final save-only checkpoint after normal training completion.
 - `rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
 - `hdc_tuning_epoch_XXXX.pdf`: HDC tuning curves.
-- `eval_animation_epoch_XXXX.mp4`: eval-style 3-panel trajectory animation.
 
 ## 🗂️ Repo Layout
 
@@ -138,13 +137,13 @@ grid-cells-torch/
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - Each training run saves the effective config to `<run directory>/config.yaml` after applying CLI overrides.
 - Checkpoints are save-only analysis artifacts; training resume is not implemented yet.
-- Learning-rate scheduling is disabled by default with `training.lr_scheduler: "none"`; enable it with `--training.lr_scheduler cosine` or `--training.lr_scheduler step`.
+- Learning-rate scheduling defaults to `training.lr_scheduler: "cosine"`; use `--training.lr_scheduler none` to disable it or `--training.lr_scheduler step` for StepLR.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
 - `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz`, `<datadir>/eval.npz`, and `<datadir>/cells.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.
 - `task.cells_path` can explicitly point to a fixed `cells.npz`; otherwise training auto-loads `<training.datadir>/cells.npz` when it exists.
-- Legacy single-file generation is still available when you pass explicit `--output` / `--eval_output` paths.
-- Long-lived generation defaults live under `data_generation.*` in `config.yaml`, while one-shot run controls such as `--visualize`, `--animate`, `--train_only`, and `--visualize_progress` stay as CLI flags.
+- Explicit file-mode generation is available when you pass `--output` / `--eval_output` paths.
+- Long-lived generation defaults live under `data_generation.*` in `config.yaml`; directory mode owns dataset-local output paths, while `data_generation.*_output` applies to explicit `--output` / `--eval_output` file mode. One-shot run controls such as `--visualize`, `--animate`, `--train_only`, and `--visualize_progress` stay as CLI flags.
 - Layered package boundaries:
   `grid_cells/common` owns shared config helpers.
   `grid_cells/cells` owns ensembles, encoding, and model code.
@@ -153,6 +152,7 @@ grid-cells-torch/
   `grid_cells/analysis` owns scoring and plotting helpers.
   `grid_cells/viz` owns animation rendering.
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
+- Training always runs a baseline evaluation at epoch 0, then evaluates every `training.eval_every` completed epochs. `training.eval_plot_every` counts these evaluation calls, including the epoch-0 baseline, when deciding whether to export PDFs and animations.
 - Typical override examples:
   `python train.py --task.env_size 2.4 --training.batch_size 32`
   `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`

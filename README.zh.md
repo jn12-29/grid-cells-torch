@@ -15,9 +15,7 @@
 | `grid_score_60 max` | `1.3284` |
 | `grid_score_90 max` | `1.5351` |
 
-[![Epoch 12 evaluation animation](docs/assets/readme/eval_animation_epoch_0012_thumb.png)](docs/assets/readme/eval_animation_epoch_0012.mp4)
-
-视频：`docs/assets/readme/eval_animation_epoch_0012.mp4`
+![Epoch 12 evaluation preview](docs/assets/readme/eval_animation_epoch_0012_thumb.png)
 
 [PDF 1](docs/assets/readme/rates_and_sac_epoch_0012.pdf) | [PDF 2](docs/assets/readme/hdc_tuning_epoch_0012.pdf)
 
@@ -63,7 +61,7 @@ python generate_data.py --animate --visualization.anim_step 2
 # 从 config.yaml 默认值出发做一次性覆盖
 python generate_data.py --data_generation.num_samples 5000 --task.seq_len 800
 
-# 显式指定输出路径时，仍可使用 legacy 单文件模式
+# 显式指定输出路径时，可使用文件模式
 python generate_data.py --output data/train_small.npz --eval_output data/eval_small.npz
 
 # 训练默认读取 data/latest/train.npz 和 data/latest/eval.npz
@@ -75,7 +73,7 @@ python train.py --training.checkpoint_every 5
 # 或指定包含 train.npz 和 eval.npz 的数据集目录
 python train.py --training.datadir data/datasets/<dataset-id>
 
-# 或启用按 epoch 更新的学习率调度
+# 或显式指定默认按 epoch 更新的学习率调度
 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
 # 也可以覆盖评估视频共用的动画参数
@@ -103,6 +101,8 @@ tensorboard --logdir results
 
 如果 `data/latest/train.npz` 不存在，`train.py` 会回退到在线生成轨迹模式。
 
+`task.targets_type=normalized` 使用独立 cell-activation target，而不是 population probability distribution；PC 和 HDC 的 normalized target 都以 1 作为峰值，使用 sigmoid/BCE loss 训练，并用 sigmoid activation weighted mean 解码。默认且推荐的解析解码合同仍是 `targets_type=softmax`。
+
 ## 📦 输出内容
 
 - `train.log`：精简训练日志。
@@ -112,7 +112,6 @@ tensorboard --logdir results
 - `checkpoints/checkpoint_final.pt`：训练正常完成后保存的 final save-only checkpoint。
 - `rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
 - `hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
-- `eval_animation_epoch_XXXX.mp4`：eval 风格的 3-panel 轨迹动画。
 
 ## 🗂️ 仓库结构
 
@@ -139,13 +138,13 @@ grid-cells-torch/
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
 - 每次训练都会把应用 CLI 覆盖后的 effective config 保存到 `<run directory>/config.yaml`。
 - Checkpoint 当前是 save-only 分析产物，尚未实现从 checkpoint 恢复训练。
-- 学习率调度默认通过 `training.lr_scheduler: "none"` 关闭；可用 `--training.lr_scheduler cosine` 或 `--training.lr_scheduler step` 启用。
+- 学习率调度默认使用 `training.lr_scheduler: "cosine"`；可用 `--training.lr_scheduler none` 关闭，或用 `--training.lr_scheduler step` 切换到 StepLR。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。
 - `train.py --training.datadir data/datasets/<dataset-id>` 会优先加载 `<datadir>/train.npz`、`<datadir>/eval.npz` 和 `<datadir>/cells.npz`，再回退到 legacy 的 `training.data_path` 与 `training.eval_data_path` 字段。
 - `task.cells_path` 可以显式指定固定的 `cells.npz`；否则训练会在存在时自动加载 `<training.datadir>/cells.npz`。
-- 如果显式传入 `--output` / `--eval_output`，仍可走 legacy 单文件模式。
-- 长期复用的数据生成默认值放在 `config.yaml` 的 `data_generation.*` 下；`--visualize`、`--animate`、`--train_only`、`--visualize_progress` 这类一次性运行开关继续保留在 CLI。
+- 显式传入 `--output` / `--eval_output` 时，可以使用文件模式生成。
+- 长期复用的数据生成默认值放在 `config.yaml` 的 `data_generation.*` 下；目录模式使用数据集目录内的固定输出路径，`data_generation.*_output` 只用于显式 `--output` / `--eval_output` 文件模式。`--visualize`、`--animate`、`--train_only`、`--visualize_progress` 这类一次性运行开关继续保留在 CLI。
 - 分层包边界如下：
   `grid_cells/common` 管理共享配置辅助。
   `grid_cells/cells` 管理 ensembles、encoding 和 model。
@@ -154,6 +153,7 @@ grid-cells-torch/
   `grid_cells/analysis` 管理评分与绘图辅助。
   `grid_cells/viz` 管理动画渲染。
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
+- 训练始终会先在 epoch 0 执行一次 baseline evaluation，然后每完成 `training.eval_every` 个 epoch 再评估一次。`training.eval_plot_every` 按这些 evaluation 调用计数，包括 epoch 0 baseline，用来决定是否导出 PDF 和动画。
 - 常见覆盖示例：
   `python train.py --task.env_size 2.4 --training.batch_size 32`
   `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`

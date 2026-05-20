@@ -128,7 +128,7 @@ def _apply_cli_path_overrides(cfg: SimpleNamespace, args: argparse.Namespace) ->
 
 
 def _get_animation_setting(cfg: SimpleNamespace, name: str, default):
-    """Resolve unified animation config, with fallback to legacy eval keys."""
+    """Resolve unified animation config from visualization settings."""
     return resolve_animation_setting(cfg, name, default)
 
 
