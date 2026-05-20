@@ -158,6 +158,7 @@ class AnimationRenderer:
         pc_vmax: float,
         title_prefix: str,
         pred_label: str,
+        hdc_ylim_max=None,
     ):
         """Create the shared 3-panel animation figure and artists."""
         import matplotlib.pyplot as plt
@@ -250,7 +251,8 @@ class AnimationRenderer:
             alpha=0.85,
             align="center",
         )
-        ax_hdc.set_ylim(0, max(float(hdc_acts.max()), 1.0 / max(n_hdc, 1)))
+        hdc_ylim_max = float(hdc_acts.max()) if hdc_ylim_max is None else float(hdc_ylim_max)
+        ax_hdc.set_ylim(0, max(hdc_ylim_max, 1.0 / max(n_hdc, 1)))
         ax_hdc.set_title("Head direction cells", color="#aaaacc", fontsize=9, pad=8)
         ax_hdc.tick_params(colors="#666688", labelsize=7)
         ax_hdc.yaxis.label.set_color("#666688")
@@ -295,13 +297,6 @@ class AnimationRenderer:
         for bar, h in zip(artists["bars_hdc"], hdc_acts[t]):
             bar.set_height(h)
 
-    def _traj_path(self, save_path: str, num_trajectories: int, traj_idx: int) -> str:
-        """Build the output path for one trajectory animation."""
-        if num_trajectories == 1:
-            return save_path
-        base, ext = os.path.splitext(save_path)
-        return f"{base}_traj{traj_idx:04d}{ext}"
-
     def render(
         self,
         target_pos: np.ndarray,
@@ -312,7 +307,7 @@ class AnimationRenderer:
         hdc_centers: np.ndarray,
         save_path: str,
     ) -> None:
-        """Generate one animation file per trajectory in the provided batch."""
+        """Generate one animation file with all provided trajectories in order."""
         os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
 
         num_trajectories = target_pos.shape[0]
@@ -326,8 +321,37 @@ class AnimationRenderer:
             num_workers = 1
 
         if num_workers <= 1:
-            for traj_idx in range(num_trajectories):
-                saved = _render_trajectory_animation(
+            saved = _render_joined_trajectory_animation(
+                (
+                    target_pos,
+                    pred_pos,
+                    pc_acts,
+                    hdc_acts,
+                    pc_centers,
+                    hdc_centers,
+                    self.env_size,
+                    pc_vmax,
+                    self.fps,
+                    self.step,
+                    save_path,
+                    self.title_prefix,
+                    self.pred_label,
+                )
+            )
+            print(f"Animation saved to {saved}")
+            return
+
+        all_frame_indices = list(range(0, total_steps, self.step))
+        n_frames_per_traj = len(all_frame_indices)
+        n_frames = n_frames_per_traj * num_trajectories
+        tasks = []
+        for traj_idx in range(num_trajectories):
+            for chunk in self.build_frame_chunks(all_frame_indices, num_workers=num_workers):
+                traj_frames = [
+                    (traj_idx * n_frames_per_traj + local_idx, frame_idx)
+                    for local_idx, frame_idx in chunk
+                ]
+                tasks.append(
                     (
                         traj_idx,
                         target_pos[traj_idx],
@@ -338,72 +362,61 @@ class AnimationRenderer:
                         hdc_centers,
                         self.env_size,
                         pc_vmax,
-                        self.fps,
-                        self.step,
-                        self._traj_path(save_path, num_trajectories, traj_idx),
+                        traj_frames,
+                        "",
                         self.title_prefix,
                         self.pred_label,
                     )
                 )
-                print(f"Animation saved to {saved}")
-            return
 
-        all_frame_indices = list(range(0, total_steps, self.step))
-        n_frames = len(all_frame_indices)
-        frame_chunks = self.build_frame_chunks(all_frame_indices, num_workers=num_workers)
-        actual_workers = min(num_workers, len(frame_chunks))
+        actual_workers = min(num_workers, len(tasks))
+        render_bar = (
+            _tqdm(total=n_frames, desc=f"render:{os.path.basename(save_path)}", unit="frame")
+            if _tqdm is not None
+            else None
+        )
 
-        for traj_idx in range(num_trajectories):
-            out_path = self._traj_path(save_path, num_trajectories, traj_idx)
-            tasks = [
-                (
-                    traj_idx,
-                    target_pos[traj_idx],
-                    pred_pos[traj_idx],
-                    pc_acts[traj_idx],
-                    hdc_acts[traj_idx],
-                    pc_centers,
-                    hdc_centers,
-                    self.env_size,
-                    pc_vmax,
-                    chunk,
-                    "",
-                    self.title_prefix,
-                    self.pred_label,
-                )
-                for chunk in frame_chunks
-            ]
+        with tempfile.TemporaryDirectory(prefix="eval_anim_") as frames_dir:
+            tasks = [task[:-3] + (frames_dir,) + task[-2:] for task in tasks]
 
-            render_bar = (
-                _tqdm(total=n_frames, desc=f"render:{os.path.basename(out_path)}", unit="frame")
-                if _tqdm is not None
-                else None
-            )
+            try:
+                with ProcessPoolExecutor(max_workers=actual_workers) as executor:
+                    futures = [
+                        executor.submit(_render_trajectory_animation_chunk, task)
+                        for task in tasks
+                    ]
+                    for future in as_completed(futures):
+                        rendered = future.result()
+                        if render_bar is not None:
+                            render_bar.update(rendered)
+            finally:
+                if render_bar is not None:
+                    render_bar.close()
 
-            with tempfile.TemporaryDirectory(prefix="eval_anim_") as frames_dir:
-                tasks = [task[:-3] + (frames_dir,) + task[-2:] for task in tasks]
+            self.encode_animation_frames(frames_dir, save_path, fps=self.fps, n_frames=n_frames)
 
-                try:
-                    with ProcessPoolExecutor(max_workers=actual_workers) as executor:
-                        futures = [
-                            executor.submit(_render_trajectory_animation_chunk, task)
-                            for task in tasks
-                        ]
-                        for future in as_completed(futures):
-                            rendered = future.result()
-                            if render_bar is not None:
-                                render_bar.update(rendered)
-                finally:
-                    if render_bar is not None:
-                        render_bar.close()
-
-                self.encode_animation_frames(frames_dir, out_path, fps=self.fps, n_frames=n_frames)
-
-            print(f"Animation saved to {out_path}")
+        print(f"Animation saved to {save_path}")
 
 
-def _render_trajectory_animation(args) -> str:
-    """Render a single 3-panel trajectory animation using a direct writer path."""
+def _set_animation_arrays(
+    arrays: dict,
+    target_pos: np.ndarray,
+    pred_pos: np.ndarray,
+    pc_acts: np.ndarray,
+    hdc_acts: np.ndarray,
+    hdc_centers: np.ndarray,
+) -> None:
+    """Point an existing animation figure at one trajectory's arrays."""
+    sorted_hdc_acts, _ = AnimationRenderer.sort_hdc_for_animation(hdc_acts, hdc_centers)
+    arrays["target_pos"] = target_pos
+    arrays["pred_pos"] = pred_pos
+    arrays["pc_acts"] = pc_acts
+    arrays["hdc_acts"] = sorted_hdc_acts
+    arrays["total_steps"] = target_pos.shape[0]
+
+
+def _render_joined_trajectory_animation(args) -> str:
+    """Render all trajectories into one sequential 3-panel animation file."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -416,7 +429,6 @@ def _render_trajectory_animation(args) -> str:
         _local_tqdm = None
 
     (
-        traj_idx,
         target_pos,
         pred_pos,
         pc_acts,
@@ -432,25 +444,26 @@ def _render_trajectory_animation(args) -> str:
         pred_label,
     ) = args
 
-    frame_indices = list(range(0, target_pos.shape[0], max(1, step)))
+    frame_indices = list(range(0, target_pos.shape[1], max(1, step)))
     fig, artists, arrays = AnimationRenderer.build_animation_artists(
-        target_pos,
-        pred_pos,
-        pc_acts,
-        hdc_acts,
+        target_pos[0],
+        pred_pos[0],
+        pc_acts[0],
+        hdc_acts[0],
         pc_centers,
         hdc_centers,
         env_size,
         pc_vmax,
         title_prefix,
         pred_label,
+        hdc_ylim_max=float(hdc_acts.max()),
     )
 
     def _make_writer(path):
         try:
             writer = FFMpegWriter(
                 fps=fps,
-                metadata={"title": f"{title_prefix} #{traj_idx}"},
+                metadata={"title": title_prefix},
             )
             return writer, path
         except Exception:
@@ -458,18 +471,34 @@ def _render_trajectory_animation(args) -> str:
             return PillowWriter(fps=fps), gif_path
 
     writer, out_path = _make_writer(out_path)
+    total_frames = target_pos.shape[0] * len(frame_indices)
     pbar = (
-        _local_tqdm(frame_indices, desc=f"render:{os.path.basename(out_path)}", unit="frame")
+        _local_tqdm(total=total_frames, desc=f"render:{os.path.basename(out_path)}", unit="frame")
         if _local_tqdm is not None
-        else frame_indices
+        else None
     )
 
-    with writer.saving(fig, out_path, dpi=110):
-        for t in pbar:
-            AnimationRenderer.update_animation_frame(artists, arrays, traj_idx, t)
-            writer.grab_frame()
+    try:
+        with writer.saving(fig, out_path, dpi=110):
+            for traj_idx in range(target_pos.shape[0]):
+                _set_animation_arrays(
+                    arrays,
+                    target_pos[traj_idx],
+                    pred_pos[traj_idx],
+                    pc_acts[traj_idx],
+                    hdc_acts[traj_idx],
+                    hdc_centers,
+                )
+                for t in frame_indices:
+                    AnimationRenderer.update_animation_frame(artists, arrays, traj_idx, t)
+                    writer.grab_frame()
+                    if pbar is not None:
+                        pbar.update(1)
+    finally:
+        if pbar is not None:
+            pbar.close()
+        plt.close(fig)
 
-    plt.close(fig)
     return out_path
 
 

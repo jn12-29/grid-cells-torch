@@ -95,6 +95,15 @@ def make_cfg():
             anim_step=4,
             anim_workers=4,
         ),
+        analysis=SimpleNamespace(
+            enabled=False,
+            num_shuffles=200,
+            fdr_alpha=0.05,
+            min_shift_fraction=0.1,
+            split_half_min_corr=0.3,
+            max_eval_trajectories=512,
+            random_seed=0,
+        ),
     )
 
 
@@ -305,6 +314,7 @@ def test_apply_overrides_updates_nested_sections_and_ignores_cli_paths():
         model=SimpleNamespace(dropout_rate=0.5),
         training=SimpleNamespace(epochs=10),
         visualization=SimpleNamespace(anim_step=4),
+        analysis=SimpleNamespace(enabled=True),
         data_generation=SimpleNamespace(num_workers=8),
     )
     args = SimpleNamespace(
@@ -315,6 +325,7 @@ def test_apply_overrides_updates_nested_sections_and_ignores_cli_paths():
         model__dropout_rate=0.25,
         training__epochs=20,
         visualization__anim_step=2,
+        analysis__enabled=False,
         data_generation__num_workers=3,
         training__lr=None,
     )
@@ -326,6 +337,7 @@ def test_apply_overrides_updates_nested_sections_and_ignores_cli_paths():
     assert cfg.model.dropout_rate == 0.25
     assert cfg.training.epochs == 20
     assert cfg.visualization.anim_step == 2
+    assert cfg.analysis.enabled is False
     assert cfg.data_generation.num_workers == 3
 
 
@@ -635,7 +647,14 @@ def test_register_config_overrides_supports_shared_sections():
     parser = argparse.ArgumentParser()
     register_config_overrides(
         parser,
-        sections=("task", "model", "training", "visualization", "data_generation"),
+        sections=(
+            "task",
+            "model",
+            "training",
+            "visualization",
+            "analysis",
+            "data_generation",
+        ),
     )
 
     args = parser.parse_args(
@@ -666,6 +685,10 @@ def test_register_config_overrides_supports_shared_sections():
             "false",
             "--visualization.anim_fps",
             "30",
+            "--analysis.enabled",
+            "false",
+            "--analysis.num_shuffles",
+            "10",
             "--data_generation.num_workers",
             "2",
         ]
@@ -684,6 +707,8 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.training__checkpoint_every == 5
     assert args.training__save_final_checkpoint is False
     assert args.visualization__anim_fps == 30
+    assert args.analysis__enabled is False
+    assert args.analysis__num_shuffles == 10
     assert args.data_generation__num_workers == 2
 
 
@@ -720,6 +745,10 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "false",
             "--visualization.anim_step",
             "2",
+            "--analysis.enabled",
+            "false",
+            "--analysis.max_eval_trajectories",
+            "16",
         ],
     )
 
@@ -737,6 +766,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__checkpoint_every == 5
     assert args.training__save_final_checkpoint is False
     assert args.visualization__anim_step == 2
+    assert args.analysis__enabled is False
+    assert args.analysis__max_eval_trajectories == 16
 
 
 def test_validate_cell_code_contract_warns_once_for_non_softmax():
@@ -1087,12 +1118,26 @@ def test_evaluate_reports_position_mse(monkeypatch, tmp_path):
         def add_scalar(self, tag, value, step):
             self.scalars[tag] = (value, step)
 
+    captured = {}
+
+    def fake_get_scores_and_plot_from_ratemaps(*args, **kwargs):
+        captured["rates_dir"] = args[2]
+        captured["rates_filename"] = args[3]
+        return np.array([0.5]), np.array([0.25])
+
+    def fake_plot_hdc_tuning_curves(*args, **kwargs):
+        captured["hdc_path"] = kwargs["save_path"]
+
+    def fake_generate_eval_animation(*args, **kwargs):
+        captured["anim_path"] = args[7]
+
     monkeypatch.setattr(
         train_module,
         "get_scores_and_plot_from_ratemaps",
-        lambda *args, **kwargs: (np.array([0.5]), np.array([0.25])),
+        fake_get_scores_and_plot_from_ratemaps,
     )
-    monkeypatch.setattr(train_module, "generate_eval_animation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(train_module, "plot_hdc_tuning_curves", fake_plot_hdc_tuning_curves)
+    monkeypatch.setattr(train_module, "generate_eval_animation", fake_generate_eval_animation)
 
     batch = {
         "init_pos": torch.zeros(1, 2),
@@ -1121,3 +1166,166 @@ def test_evaluate_reports_position_mse(monkeypatch, tmp_path):
     assert writer.scalars["eval/hd_mae_rad"][1] == 2
     assert writer.scalars["eval/pos_mse"][0] < 1e-6
     assert writer.scalars["eval/hd_mae_rad"][0] < 1e-6
+    assert os.path.normpath(captured["rates_dir"]) == os.path.normpath(
+        str(tmp_path / "eval_plots")
+    )
+    assert captured["rates_filename"] == "rates_and_sac_epoch_0002.pdf"
+    assert os.path.normpath(captured["hdc_path"]) == os.path.normpath(
+        str(tmp_path / "eval_plots" / "hdc_tuning_epoch_0002.pdf")
+    )
+    assert os.path.normpath(captured["anim_path"]) == os.path.normpath(
+        str(tmp_path / "eval_videos" / "eval_animation_epoch_0002.mp4")
+    )
+
+
+def test_evaluate_analysis_disabled_does_not_write_grid_stats(monkeypatch, tmp_path):
+    """Disabled statistical analysis should leave the existing artifact surface unchanged."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_units_per_page = 8
+    cfg.training.eval_plot_every = 0
+    cfg.analysis.enabled = False
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    class DummyModel:
+        def __init__(self):
+            self.training = False
+
+        def eval(self):
+            self.training = False
+
+        def train(self):
+            self.training = True
+
+        def __call__(self, init_cond, ego_vel, training=False):
+            batch, seq_len = ego_vel.shape[:2]
+            pc_logits = [torch.zeros(batch, seq_len, 2, dtype=ego_vel.dtype)]
+            hdc_logits = [torch.zeros(batch, seq_len, 4, dtype=ego_vel.dtype)]
+            bottleneck = torch.zeros(batch, seq_len, cfg.model.nh_bottleneck, dtype=ego_vel.dtype)
+            lstm_acts = torch.zeros(batch, seq_len, cfg.model.nh_lstm, dtype=ego_vel.dtype)
+            return pc_logits, hdc_logits, bottleneck, lstm_acts
+
+    class DummyScorer:
+        def allocate_ratemap_accumulators(self, n_units):
+            return np.zeros((n_units, 2, 2), dtype=np.float32), np.zeros((2, 2), dtype=np.float32)
+
+        def accumulate_ratemaps(self, positions, activations, ratemap_sums, ratemap_counts):
+            ratemap_sums += 1.0
+            ratemap_counts += 1.0
+
+        def finalize_ratemaps(self, ratemap_sums, ratemap_counts):
+            return ratemap_sums
+
+    monkeypatch.setattr(
+        train_module,
+        "score_ratemaps",
+        lambda *args, **kwargs: (
+            np.array([0.5]),
+            np.array([0.25]),
+            None,
+            None,
+            None,
+        ),
+    )
+
+    batch = {
+        "init_pos": torch.zeros(1, 2),
+        "init_hd": torch.zeros(1, 1),
+        "ego_vel": torch.zeros(1, 3, 3),
+        "target_pos": torch.zeros(1, 3, 2),
+        "target_hd": torch.zeros(1, 3, 1),
+    }
+
+    _evaluate(
+        DummyModel(),
+        pc_ens,
+        hdc_ens,
+        DummyScorer(),
+        [batch],
+        cfg,
+        torch.device("cpu"),
+        epoch=2,
+    )
+
+    assert not list((tmp_path / "eval_stats").glob("grid_stats_epoch_0002*"))
+
+
+def test_evaluate_analysis_enabled_writes_grid_stats(monkeypatch, tmp_path):
+    """Enabled statistical analysis should write the configured eval artifacts."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_units_per_page = 8
+    cfg.training.eval_plot_every = 0
+    cfg.analysis.enabled = True
+    cfg.analysis.num_shuffles = 1
+    cfg.analysis.max_eval_trajectories = 2
+    cfg.visualization.directional_bins = 4
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    class DummyModel:
+        def __init__(self):
+            self.training = False
+
+        def eval(self):
+            self.training = False
+
+        def train(self):
+            self.training = True
+
+        def __call__(self, init_cond, ego_vel, training=False):
+            batch, seq_len = ego_vel.shape[:2]
+            pc_logits = [torch.zeros(batch, seq_len, 2, dtype=ego_vel.dtype)]
+            hdc_logits = [torch.zeros(batch, seq_len, 4, dtype=ego_vel.dtype)]
+            base = torch.arange(seq_len, dtype=ego_vel.dtype).reshape(1, seq_len, 1)
+            unit_scale = torch.linspace(0.2, 1.0, cfg.model.nh_bottleneck).reshape(1, 1, -1)
+            bottleneck = torch.cos(base * unit_scale).repeat(batch, 1, 1)
+            lstm_acts = torch.zeros(batch, seq_len, cfg.model.nh_lstm, dtype=ego_vel.dtype)
+            return pc_logits, hdc_logits, bottleneck, lstm_acts
+
+    monkeypatch.setattr(
+        train_module,
+        "score_ratemaps",
+        lambda *args, **kwargs: (
+            np.zeros(cfg.model.nh_bottleneck),
+            np.zeros(cfg.model.nh_bottleneck),
+            None,
+            None,
+            None,
+        ),
+    )
+
+    batch = {
+        "init_pos": torch.zeros(2, 2),
+        "init_hd": torch.zeros(2, 1),
+        "ego_vel": torch.zeros(2, 5, 3),
+        "target_pos": torch.tensor(
+            [
+                [[-0.8, -0.8], [-0.4, -0.4], [0.0, 0.0], [0.4, 0.4], [0.8, 0.8]],
+                [[-0.8, 0.8], [-0.4, 0.4], [0.0, 0.0], [0.4, -0.4], [0.8, -0.8]],
+            ],
+            dtype=torch.float32,
+        ),
+        "target_hd": torch.linspace(-np.pi, np.pi, 10).reshape(2, 5, 1),
+    }
+
+    _evaluate(
+        DummyModel(),
+        pc_ens,
+        hdc_ens,
+        train_module.TrainingSession(make_cfg(), hooks=None)._build_scorer(),
+        [batch],
+        cfg,
+        torch.device("cpu"),
+        epoch=3,
+    )
+
+    stats_dir = tmp_path / "eval_stats"
+    assert (stats_dir / "grid_stats_epoch_0003.csv").exists()
+    assert (stats_dir / "grid_stats_epoch_0003.npz").exists()
+    assert (stats_dir / "grid_stats_summary_epoch_0003.json").exists()

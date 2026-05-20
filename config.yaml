@@ -70,6 +70,15 @@ visualization:
   anim_step: 4            # render every N-th timestep (4 → 4× speed, 1000 steps → 250 frames)
   anim_workers: 4         # parallel workers for frame rendering when ffmpeg is available
 
+analysis:
+  enabled: true
+  num_shuffles: 200
+  fdr_alpha: 0.05
+  min_shift_fraction: 0.1
+  split_half_min_corr: 0.3
+  max_eval_trajectories: 512
+  random_seed: 0
+
 data_generation:
   num_samples: null          # training trajectories to generate; null = steps_per_epoch × batch_size
   eval_num_samples: null     # eval trajectories to generate; null = training.eval_num_samples

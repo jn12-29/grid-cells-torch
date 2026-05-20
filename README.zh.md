@@ -28,6 +28,7 @@
 - 精简 `train.log` 和 TensorBoard 日志。
 - 在训练与评估中加入 scale-invariant 解析位置解码指标 `pos_mse` 和环形头朝向误差 `hd_mae_rad`。
 - 支持分页 rate-map PDF、HDC tuning PDF，以及训练评估和数据生成共用的 3-panel MP4。
+- 可选 bottleneck 单元统计分析，包括 circular-shift grid-score 显著性、split-half reliability 和头朝向选择性。
 - 提供以 CLI 为中心的数据生成、可视化和实验管理流程。
 
 ## 📚 参考
@@ -79,6 +80,9 @@ python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 # 也可以覆盖评估视频共用的动画参数
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
+# 或在快速运行中降低统计分析成本
+python train.py --analysis.num_shuffles 20 --analysis.max_eval_trajectories 64
+
 # 或显式指定推荐的 scale-invariant 解析解码合同
 python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
 
@@ -110,8 +114,10 @@ tensorboard --logdir results
 - `tensorboard/`：标量指标和配置快照。
 - `checkpoints/checkpoint_epoch_XXXX.pt`：按配置在完成指定 epoch 后保存的 save-only checkpoint。
 - `checkpoints/checkpoint_final.pt`：训练正常完成后保存的 final save-only checkpoint。
-- `rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
-- `hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
+- `eval_plots/rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
+- `eval_plots/hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
+- `eval_videos/eval_animation_epoch_XXXX.mp4`：按顺序拼接后的 eval 轨迹动画；多条轨迹会合成一个视频。
+- `eval_stats/grid_stats_epoch_XXXX.csv`、`eval_stats/grid_stats_epoch_XXXX.npz`、`eval_stats/grid_stats_summary_epoch_XXXX.json`：当 `analysis.enabled=true` 时导出的 bottleneck 单元 grid 显著性、split-half reliability、头朝向选择性和 mixed-selectivity 计数。
 
 ## 🗂️ 仓库结构
 
@@ -153,6 +159,7 @@ grid-cells-torch/
   `grid_cells/analysis` 管理评分与绘图辅助。
   `grid_cells/viz` 管理动画渲染。
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
+- 统计评估默认参数统一放在 `analysis.*` 下；`analysis.max_eval_trajectories` 会限制 shuffle 统计分析保留的 eval 子集大小。
 - 训练始终会先在 epoch 0 执行一次 baseline evaluation，然后每完成 `training.eval_every` 个 epoch 再评估一次。`training.eval_plot_every` 按这些 evaluation 调用计数，包括 epoch 0 baseline，用来决定是否导出 PDF 和动画。
 - 常见覆盖示例：
   `python train.py --task.env_size 2.4 --training.batch_size 32`

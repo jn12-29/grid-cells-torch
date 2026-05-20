@@ -21,7 +21,9 @@
 
 ## Workflow Contracts
 
-- Shared animation knobs live under `visualization.anim_*`; keep `train.py` eval videos and `generate_data.py --animate` aligned to that interface.
+- Shared animation knobs live under `visualization.anim_*`; keep `train.py` eval videos and `generate_data.py --animate` aligned to that interface. Training eval writes one sequential MP4 per plotted epoch under `<run directory>/eval_videos/`.
+- Evaluation statistical-analysis settings live under `analysis.*`; when enabled, eval writes `grid_stats_epoch_XXXX.csv`, `grid_stats_epoch_XXXX.npz`, and `grid_stats_summary_epoch_XXXX.json` artifacts under `<run directory>/eval_stats/` for bottleneck-unit grid significance, split-half reliability, and head-direction selectivity.
+- Evaluation PDFs are exported under `<run directory>/eval_plots/`.
 - Training checkpoints are save-only artifacts under `<run directory>/checkpoints/`; `grid_cells/training/runtime.py` owns serialization and `TrainingSession` owns scheduling.
 - Training runs a baseline evaluation at epoch 0, then evaluates every `training.eval_every` completed epochs; `training.eval_plot_every` counts those evaluation calls, including epoch 0, for PDF/animation export.
 - `generate_data.py` defaults to directory mode; `data_generation.*_output` paths apply only to explicit `--output` / `--eval_output` file mode.
@@ -31,4 +33,4 @@
 ## Local Development
 
 - Run project commands in the conda `gce` environment. If the tool shell does not inherit the user's active shell environment, use `conda run -n gce ...` explicitly.
-- Pytest can appear to hang under the sandbox for this project. If a test run stalls without output, check for sandbox-related blockage and rerun the smallest relevant test selection outside the sandbox with approval instead of assuming the tests are broken.
+- Pytest can appear to hang under the sandbox for this project. If a test run stalls without output, check for sandbox-related blockage and rerun test outside the sandbox instead of assuming the tests are broken.

@@ -31,7 +31,7 @@ def parse_train_args() -> argparse.Namespace:
     )
     register_config_overrides(
         parser,
-        sections=("task", "model", "training", "visualization"),
+        sections=("task", "model", "training", "visualization", "analysis"),
     )
 
     return parser.parse_args()

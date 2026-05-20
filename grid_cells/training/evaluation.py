@@ -19,6 +19,10 @@ from typing import Callable, Optional
 import numpy as np
 import torch
 
+from grid_cells.analysis.spatial_stats import (
+    analyze_bottleneck_spatial_stats,
+    save_spatial_stats_artifacts,
+)
 from grid_cells.cells.decoding import logits_to_cell_activations
 
 
@@ -51,6 +55,9 @@ class EvaluationCollection:
     anim_data: Optional[dict]
     hd_list: list
     hdc_list: list
+    analysis_pos_list: list
+    analysis_hd_list: list
+    analysis_bottleneck_list: list
 
 
 class Evaluator:
@@ -140,6 +147,12 @@ class Evaluator:
         num_anim_traj = int(self.hooks.get_animation_setting("anim_num_traj", 4))
         hd_list = []
         hdc_list = []
+        analysis_pos_list = []
+        analysis_hd_list = []
+        analysis_bottleneck_list = []
+        analysis_enabled = self._analysis_enabled()
+        max_analysis_traj = self._max_analysis_trajectories()
+        analysis_traj_count = 0
 
         with torch.no_grad():
             for batch in self.eval_loader:
@@ -175,6 +188,21 @@ class Evaluator:
                     ratemap_counts,
                 )
 
+                if analysis_enabled and analysis_traj_count < max_analysis_traj:
+                    remaining = max_analysis_traj - analysis_traj_count
+                    take = min(remaining, batch["target_pos"].shape[0])
+                    if take > 0:
+                        analysis_pos_list.append(
+                            batch["target_pos"][:take].detach().cpu().numpy()
+                        )
+                        analysis_hd_list.append(
+                            batch["target_hd"][:take].detach().cpu().numpy()
+                        )
+                        analysis_bottleneck_list.append(
+                            bottleneck[:take].detach().cpu().numpy()
+                        )
+                        analysis_traj_count += take
+
                 if save_pdf:
                     hd_np = batch["target_hd"].detach().cpu().numpy()
                     hdc_np = logits_to_cell_activations(
@@ -203,7 +231,24 @@ class Evaluator:
             anim_data=anim_data,
             hd_list=hd_list,
             hdc_list=hdc_list,
+            analysis_pos_list=analysis_pos_list,
+            analysis_hd_list=analysis_hd_list,
+            analysis_bottleneck_list=analysis_bottleneck_list,
         )
+
+    def _analysis_enabled(self) -> bool:
+        """Resolve whether statistical analysis artifacts should be exported."""
+        analysis_cfg = getattr(self.cfg, "analysis", None)
+        return bool(getattr(analysis_cfg, "enabled", False))
+
+    def _max_analysis_trajectories(self) -> int:
+        """Return the configured cap on eval trajectories retained for analysis."""
+        analysis_cfg = getattr(self.cfg, "analysis", None)
+        return max(0, int(getattr(analysis_cfg, "max_eval_trajectories", 0)))
+
+    def _artifact_dir(self, name: str) -> str:
+        """Return a shallow eval artifact directory under the current run."""
+        return os.path.join(self.cfg.training.save_dir, name)
 
     def _build_animation_batch(self, batch, pc_logits, hdc_logits, num_anim_traj: int) -> dict:
         """Prepare the first-batch animation payload used for eval exports."""
@@ -242,9 +287,10 @@ class Evaluator:
                 num_workers=num_workers,
                 chunk_size=chunk_size,
             )
+            self._export_spatial_stats(collected, epoch)
             return score_60, score_90
 
-        save_dir = self.cfg.training.save_dir
+        save_dir = self._artifact_dir("eval_plots")
         filename = f"rates_and_sac_epoch_{epoch:04d}.pdf"
         scores = self.hooks.get_scores_and_plot_from_ratemaps(
             self.scorer,
@@ -259,9 +305,53 @@ class Evaluator:
         score_60 = scores[0]
         score_90 = scores[1]
 
+        self._export_spatial_stats(collected, epoch)
         self._export_hdc_tuning_curves(collected, save_dir, epoch)
-        self._export_animation(collected.anim_data, save_dir, epoch)
+        self._export_animation(collected.anim_data, epoch)
         return score_60, score_90
+
+    def _export_spatial_stats(
+        self,
+        collected: EvaluationCollection,
+        epoch: int,
+    ) -> None:
+        """Write statistical grid/HD artifacts when analysis is enabled."""
+        if not self._analysis_enabled():
+            return
+        if not collected.analysis_pos_list:
+            self.logger.warning("Grid-cell statistical analysis skipped: no eval data collected")
+            return
+
+        analysis_cfg = getattr(self.cfg, "analysis", None)
+        result = analyze_bottleneck_spatial_stats(
+            self.scorer,
+            np.concatenate(collected.analysis_pos_list, axis=0),
+            np.concatenate(collected.analysis_hd_list, axis=0),
+            np.concatenate(collected.analysis_bottleneck_list, axis=0),
+            n_direction_bins=getattr(self.cfg.visualization, "directional_bins", 20),
+            num_shuffles=int(getattr(analysis_cfg, "num_shuffles", 200)),
+            fdr_alpha=float(getattr(analysis_cfg, "fdr_alpha", 0.05)),
+            min_shift_fraction=float(getattr(analysis_cfg, "min_shift_fraction", 0.1)),
+            split_half_min_corr=float(
+                getattr(analysis_cfg, "split_half_min_corr", 0.3)
+            ),
+            random_seed=int(getattr(analysis_cfg, "random_seed", 0)),
+        )
+        paths = save_spatial_stats_artifacts(
+            result,
+            self._artifact_dir("eval_stats"),
+            epoch,
+        )
+        summary = result["summary"]
+        self.logger.info(
+            "grid stats saved to %s  grid_fdr=%d  reliable_grid=%d  "
+            "hd_selective=%d  grid_and_hd=%d",
+            paths["csv"],
+            summary["n_grid_fdr"],
+            summary["n_reliable_grid"],
+            summary["n_hd_selective"],
+            summary["n_grid_and_hd"],
+        )
 
     def _export_hdc_tuning_curves(
         self,
@@ -286,12 +376,15 @@ class Evaluator:
         except Exception as exc:
             self.logger.warning("HDC tuning curve plot failed: %s", exc)
 
-    def _export_animation(self, anim_data: Optional[dict], save_dir: str, epoch: int) -> None:
+    def _export_animation(self, anim_data: Optional[dict], epoch: int) -> None:
         """Write the eval animation when the first batch payload is available."""
         if anim_data is None:
             return
 
-        anim_path = os.path.join(save_dir, f"eval_animation_epoch_{epoch:04d}.mp4")
+        anim_path = os.path.join(
+            self._artifact_dir("eval_videos"),
+            f"eval_animation_epoch_{epoch:04d}.mp4",
+        )
         pc_centers = np.concatenate([ens.means for ens in self.pc_ens], axis=0)
         hdc_centers = np.concatenate([ens.means.reshape(-1) for ens in self.hdc_ens], axis=0)
         try:

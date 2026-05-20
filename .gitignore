@@ -17,6 +17,7 @@ env/
 # Local data and experiment outputs
 /data/
 results/
+old_results/
 logs/
 runs/
 outputs/

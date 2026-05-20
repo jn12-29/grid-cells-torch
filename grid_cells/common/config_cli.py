@@ -75,6 +75,15 @@ CONFIG_OVERRIDE_SPECS = {
         "anim_step": {"type": int},
         "anim_workers": {"type": int},
     },
+    "analysis": {
+        "enabled": {"type": str2bool},
+        "num_shuffles": {"type": int},
+        "fdr_alpha": {"type": float},
+        "min_shift_fraction": {"type": float},
+        "split_half_min_corr": {"type": float},
+        "max_eval_trajectories": {"type": int},
+        "random_seed": {"type": int},
+    },
     "data_generation": {
         "num_samples": {"type": int},
         "eval_num_samples": {"type": int},

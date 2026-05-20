@@ -28,6 +28,7 @@ README-safe assets are mirrored under `docs/assets/readme/`.
 - Compact `train.log` and TensorBoard logging.
 - Scale-invariant analytic decoded-position metric `pos_mse` and circular head-direction error `hd_mae_rad` for training and evaluation.
 - Paginated rate-map PDFs, HDC tuning PDFs, and shared 3-panel MP4s for eval and generated data.
+- Optional bottleneck-unit statistical analysis with circular-shift grid-score significance, split-half reliability, and head-direction selectivity.
 - CLI-oriented data generation, visualization, and experiment management.
 
 ## 📚 References
@@ -78,6 +79,9 @@ python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 # or override the shared animation config for eval videos
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
+# or reduce statistical-analysis cost for a quick run
+python train.py --analysis.num_shuffles 20 --analysis.max_eval_trajectories 64
+
 # or make the recommended scale-invariant analytic decoding contract explicit
 python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
 
@@ -109,8 +113,10 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 - `tensorboard/`: scalar metrics and config snapshot.
 - `checkpoints/checkpoint_epoch_XXXX.pt`: periodic save-only checkpoint after configured completed epochs.
 - `checkpoints/checkpoint_final.pt`: final save-only checkpoint after normal training completion.
-- `rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
-- `hdc_tuning_epoch_XXXX.pdf`: HDC tuning curves.
+- `eval_plots/rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
+- `eval_plots/hdc_tuning_epoch_XXXX.pdf`: HDC tuning curves.
+- `eval_videos/eval_animation_epoch_XXXX.mp4`: sequential eval trajectory animation; multiple trajectories are joined into one video.
+- `eval_stats/grid_stats_epoch_XXXX.csv`, `eval_stats/grid_stats_epoch_XXXX.npz`, `eval_stats/grid_stats_summary_epoch_XXXX.json`: bottleneck-unit grid significance, split-half reliability, head-direction selectivity, and mixed-selectivity counts when `analysis.enabled=true`.
 
 ## 🗂️ Repo Layout
 
@@ -152,6 +158,7 @@ grid-cells-torch/
   `grid_cells/analysis` owns scoring and plotting helpers.
   `grid_cells/viz` owns animation rendering.
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
+- Statistical evaluation defaults live under `analysis.*`; `analysis.max_eval_trajectories` caps the eval subset retained for shuffle-based analysis.
 - Training always runs a baseline evaluation at epoch 0, then evaluates every `training.eval_every` completed epochs. `training.eval_plot_every` counts these evaluation calls, including the epoch-0 baseline, when deciding whether to export PDFs and animations.
 - Typical override examples:
   `python train.py --task.env_size 2.4 --training.batch_size 32`
