@@ -112,6 +112,8 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 
 `task.targets_type=normalized` uses independent cell-activation targets instead of a population probability distribution; both PC and HDC normalized targets have unit peak activations, train with sigmoid/BCE loss, and decode with sigmoid-activation weighted means. The default and recommended analytic-decoding contract remains `targets_type=softmax`.
 
+`training.first_pos_loss_multiplier` controls timestep-0 place-cell target-loss weighting without adding a decoded `first_pos_mse` auxiliary loss.
+
 ## 📦 Outputs
 
 - `train.log`: compact training log.

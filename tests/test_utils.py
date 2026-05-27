@@ -353,6 +353,78 @@ def test_normalized_hdc_targets_are_unit_peak_bce_labels():
     assert loss.item() >= 0.0
 
 
+def test_softmax_cell_loss_supports_timestep_weights():
+    """Softmax target loss should use normalized time weights when provided."""
+    ensemble = PlaceCellEnsemble(3, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)
+    predictions = torch.tensor(
+        [[[2.0, 0.0, -1.0], [0.5, 1.0, -0.5]]],
+        dtype=torch.float32,
+    )
+    targets = torch.tensor(
+        [[[1.0, 0.0, 0.0], [0.0, 0.75, 0.25]]],
+        dtype=torch.float32,
+    )
+    weights = torch.tensor([4.0, 1.0], dtype=torch.float32)
+
+    per_timestep = -(
+        targets * torch.nn.functional.log_softmax(predictions, dim=-1)
+    ).sum(dim=-1)
+    expected = (per_timestep * weights.unsqueeze(0)).sum() / weights.sum()
+
+    assert torch.allclose(
+        ensemble.loss(predictions, targets, timestep_weights=weights),
+        expected,
+    )
+    assert torch.allclose(ensemble.loss(predictions, targets), per_timestep.mean())
+
+
+def test_normalized_cell_loss_supports_timestep_weights():
+    """Normalized target loss should weight timesteps after averaging over cells."""
+    ensemble = HeadDirectionCellEnsemble(
+        4,
+        concentration=20.0,
+        seed=0,
+        soft_targets="normalized",
+    )
+    predictions = torch.tensor(
+        [[[1.0, -0.5, 0.25, 2.0], [-1.0, 0.5, 1.5, -0.25]]],
+        dtype=torch.float32,
+    )
+    targets = torch.tensor(
+        [[[1.0, 0.0, 0.5, 0.25], [0.0, 1.0, 0.25, 0.75]]],
+        dtype=torch.float32,
+    )
+    weights = torch.tensor([1.0, 3.0], dtype=torch.float32)
+
+    labels = 0.99 * targets + 0.01 * 0.5
+    per_timestep = torch.nn.functional.binary_cross_entropy_with_logits(
+        predictions,
+        labels,
+        reduction="none",
+    ).mean(dim=-1)
+    expected = (per_timestep * weights.unsqueeze(0)).sum() / weights.sum()
+
+    assert torch.allclose(
+        ensemble.loss(predictions, targets, timestep_weights=weights),
+        expected,
+    )
+    assert torch.allclose(ensemble.loss(predictions, targets), per_timestep.mean())
+
+
+def test_cell_loss_rejects_invalid_timestep_weights():
+    """Time-weighted loss should fail fast for invalid reduction weights."""
+    ensemble = PlaceCellEnsemble(3, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)
+    predictions = torch.zeros(1, 2, 3)
+    targets = torch.full((1, 2, 3), 1.0 / 3.0)
+
+    with pytest.raises(ValueError, match="shape"):
+        ensemble.loss(predictions, targets, timestep_weights=torch.ones(3))
+    with pytest.raises(ValueError, match="non-negative"):
+        ensemble.loss(predictions, targets, timestep_weights=torch.tensor([1.0, -1.0]))
+    with pytest.raises(ValueError, match="positive"):
+        ensemble.loss(predictions, targets, timestep_weights=torch.zeros(2))
+
+
 def test_prepare_dataset_animation_inputs_builds_eval_style_payload(tmp_path):
     """Generated datasets should be convertible into the shared 3-panel animation inputs."""
     output_path = tmp_path / "train.npz"

@@ -266,6 +266,25 @@ class TrainingSession:
                 pc_targets, hdc_targets = encode_targets(batch, pc_ens, hdc_ens)
 
             pc_logits, hdc_logits, _, _ = model(init_cond, batch["ego_vel"], training=True)
+            first_pos_loss_multiplier = float(
+                getattr(self.cfg.training, "first_pos_loss_multiplier", 1.0)
+            )
+            if not np.isfinite(first_pos_loss_multiplier):
+                raise ValueError("training.first_pos_loss_multiplier must be finite.")
+            if first_pos_loss_multiplier < 0.0:
+                raise ValueError(
+                    "training.first_pos_loss_multiplier must be non-negative."
+                )
+            pc_timestep_weights = None
+            if first_pos_loss_multiplier != 1.0:
+                seq_len = pc_logits[0].shape[1]
+                pc_timestep_weights = torch.ones(
+                    seq_len,
+                    dtype=pc_logits[0].dtype,
+                    device=pc_logits[0].device,
+                )
+                pc_timestep_weights[0] = first_pos_loss_multiplier
+
             with torch.no_grad():
                 pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
                 first_pos_mse = compute_position_mse(
@@ -285,7 +304,7 @@ class TrainingSession:
                 )
 
             loss = sum(
-                ens.loss(logits, targets)
+                ens.loss(logits, targets, timestep_weights=pc_timestep_weights)
                 for ens, logits, targets in zip(pc_ens, pc_logits, pc_targets)
             )
             loss += sum(
@@ -365,6 +384,11 @@ class TrainingSession:
             writer.add_scalar("train/hd_mae_rad_mean", epoch_hd_mae, epoch)
             writer.add_scalar("train/first_hd_mae_rad_mean", epoch_first_hd_mae, epoch)
             writer.add_scalar("train/first_hd_mae_rad_ratio", epoch_first_hd_ratio, epoch)
+            writer.add_scalar(
+                "train/first_pos_loss_multiplier",
+                float(getattr(self.cfg.training, "first_pos_loss_multiplier", 1.0)),
+                epoch,
+            )
             writer.add_scalar("train/lr", current_lr, epoch)
             writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
 

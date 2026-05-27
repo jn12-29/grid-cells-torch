@@ -155,13 +155,16 @@ class CellEnsemble(ABC):
         """
         return self._apply_mode(x, self.soft_init)
 
-    def loss(self, predictions, targets):
+    def loss(self, predictions, targets, timestep_weights=None):
         """Cross-entropy loss between model predictions and cell targets.
 
         Args:
             predictions: torch.Tensor of shape (batch, seq_len, n_cells).
                          These are *logits* (pre-softmax / pre-sigmoid).
             targets: numpy array of shape (batch, seq_len, n_cells).
+            timestep_weights: optional sequence-length weights for the time
+                              reduction. When omitted, all timesteps contribute
+                              equally.
 
         Returns:
             Scalar torch.Tensor (mean over batch and seq dimensions).
@@ -170,6 +173,7 @@ class CellEnsemble(ABC):
         targets_t = torch.as_tensor(
             targets, dtype=predictions.dtype, device=predictions.device
         )
+        batch, seq, n = predictions.shape
 
         if self.soft_targets == "normalized":
             # 'normalized' treats each cell as independent binary output (multi-label).
@@ -178,21 +182,42 @@ class CellEnsemble(ABC):
             smoothing = 1e-2
             labels = (1.0 - smoothing) * targets_t + smoothing * 0.5
             # binary_cross_entropy_with_logits expects predictions as logits
-            loss_val = F.binary_cross_entropy_with_logits(
-                predictions, labels, reduction="mean"
+            loss_per_cell = F.binary_cross_entropy_with_logits(
+                predictions, labels, reduction="none"
             )
+            loss_per_timestep = loss_per_cell.mean(dim=-1)
         else:
             # Softmax cross-entropy
             # cross_entropy expects (N, C) or (N, C, d1, ...) with class dim = 1
-            batch, seq, n = predictions.shape
             # Flatten batch and seq into a single dimension
             pred_flat = predictions.reshape(batch * seq, n)       # (B*T, C)
             tgt_flat = targets_t.reshape(batch * seq, n)          # (B*T, C)
             # Use soft labels via log_softmax + sum
             log_probs = F.log_softmax(pred_flat, dim=-1)          # (B*T, C)
-            loss_val = -(tgt_flat * log_probs).sum(dim=-1).mean()
+            loss_per_timestep = -(tgt_flat * log_probs).sum(dim=-1).reshape(batch, seq)
 
-        return loss_val
+        if timestep_weights is None:
+            return loss_per_timestep.mean()
+
+        weights = torch.as_tensor(
+            timestep_weights,
+            dtype=predictions.dtype,
+            device=predictions.device,
+        )
+        if weights.ndim != 1 or weights.shape[0] != seq:
+            raise ValueError(
+                f"timestep_weights must have shape ({seq},), got {tuple(weights.shape)}."
+            )
+        if not torch.isfinite(weights).all():
+            raise ValueError("timestep_weights must be finite.")
+        if torch.any(weights < 0.0):
+            raise ValueError("timestep_weights must be non-negative.")
+
+        weight_sum = weights.sum()
+        if weight_sum <= 0.0:
+            raise ValueError("timestep_weights must contain at least one positive value.")
+
+        return (loss_per_timestep * weights.unsqueeze(0)).sum() / (batch * weight_sum)
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ CONFIG_OVERRIDE_SPECS = {
         "adamw_eps": {"type": float},
         "weight_decay": {"type": float},
         "grad_clip": {"type": float},
+        "first_pos_loss_multiplier": {"type": float},
         "eval_every": {"type": int},
         "num_workers": {"type": int},
         "save_dir": {"type": str},

@@ -113,6 +113,8 @@ tensorboard --logdir results
 
 `task.targets_type=normalized` 使用独立 cell-activation target，而不是 population probability distribution；PC 和 HDC 的 normalized target 都以 1 作为峰值，使用 sigmoid/BCE loss 训练，并用 sigmoid activation weighted mean 解码。默认且推荐的解析解码合同仍是 `targets_type=softmax`。
 
+`training.first_pos_loss_multiplier` 控制 timestep-0 place-cell target loss 权重，但不会额外加入 decoded `first_pos_mse` auxiliary loss。
+
 ## 📦 输出内容
 
 - `train.log`：精简训练日志。

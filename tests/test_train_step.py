@@ -84,6 +84,7 @@ def make_cfg():
             adamw_eps=1e-8,
             weight_decay=1e-5,
             grad_clip=1e-5,
+            first_pos_loss_multiplier=1.0,
             checkpoint_every=0,
             save_final_checkpoint=True,
             eval_every=1,
@@ -172,6 +173,7 @@ def test_run_epoch_logs_first_step_metrics():
     cfg.training.eval_every = 99
     cfg.training.tensorboard_log_every = 1
     cfg.training.use_tqdm = False
+    cfg.training.first_pos_loss_multiplier = 2.0
     device = torch.device("cpu")
 
     pc_ens = [PlaceCellEnsemble(4, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
@@ -254,6 +256,7 @@ def test_run_epoch_logs_first_step_metrics():
         "train/first_hd_mae_rad_step",
         "train/first_hd_mae_rad_mean",
         "train/first_hd_mae_rad_ratio",
+        "train/first_pos_loss_multiplier",
     ):
         assert tag in writer.scalars
         assert np.isfinite(writer.scalars[tag][0][0])
@@ -799,6 +802,8 @@ def test_register_config_overrides_supports_shared_sections():
             "cosine",
             "--training.lr_min",
             "1e-5",
+            "--training.first_pos_loss_multiplier",
+            "50",
             "--training.datadir",
             "data/custom",
             "--training.checkpoint_every",
@@ -839,6 +844,7 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.training__batch_size == 8
     assert args.training__lr_scheduler == "cosine"
     assert args.training__lr_min == 1e-5
+    assert args.training__first_pos_loss_multiplier == 50.0
     assert args.training__datadir == "data/custom"
     assert args.training__checkpoint_every == 5
     assert args.training__save_final_checkpoint is False
@@ -880,6 +886,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "10",
             "--training.lr_gamma",
             "0.8",
+            "--training.first_pos_loss_multiplier",
+            "25",
             "--training.datadir",
             "data/custom",
             "--training.checkpoint_every",
@@ -907,6 +915,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__lr_scheduler == "step"
     assert args.training__lr_step_size == 10
     assert args.training__lr_gamma == 0.8
+    assert args.training__first_pos_loss_multiplier == 25.0
     assert args.training__datadir == "data/custom"
     assert args.training__checkpoint_every == 5
     assert args.training__save_final_checkpoint is False

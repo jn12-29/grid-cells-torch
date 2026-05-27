@@ -45,6 +45,7 @@ training:
   adamw_eps: 1.0e-8 # Adam ε for numerical stability in denominator
   weight_decay: 1.0e-5
   grad_clip: 1.0e-5 # gradient clipping max norm
+  first_pos_loss_multiplier: 1.0 # PC timestep-0 target-loss weight; 1.0 preserves uniform time weighting
   num_workers: 4 # default DataLoader worker processes for train/eval data loading
   save_dir: "./results"
   run_name: null # optional name suffix appended to the timestamped run directory
