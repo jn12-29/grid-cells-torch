@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import train as train_module
 from grid_cells.data.dataset import get_dataloader
+from grid_cells.cells.encoding import EnsembleEncoder
 from grid_cells.cells.ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from grid_cells.cells.model import GridCellsRNN
 from train import (
@@ -162,6 +163,100 @@ def test_training_step_with_preencoded_batch():
     optimizer.step()
 
     assert np.isfinite(loss.item())
+
+
+def test_run_epoch_logs_first_step_metrics():
+    """Training should emit diagnostics for the first predicted timestep."""
+    cfg = make_cfg()
+    cfg.task.seq_len = 3
+    cfg.training.eval_every = 99
+    cfg.training.tensorboard_log_every = 1
+    cfg.training.use_tqdm = False
+    device = torch.device("cpu")
+
+    pc_ens = [PlaceCellEnsemble(4, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    encoder = EnsembleEncoder(pc_ens, hdc_ens)
+
+    init_pos = torch.zeros(2, 2)
+    init_hd = torch.zeros(2, 1)
+    ego_vel = torch.zeros(2, 3, 3)
+    target_pos = torch.tensor(
+        [
+            [[0.0, 0.0], [0.1, 0.0], [0.2, 0.0]],
+            [[0.0, 0.0], [0.0, 0.1], [0.0, 0.2]],
+        ],
+        dtype=torch.float32,
+    )
+    target_hd = torch.zeros(2, 3, 1)
+    encoded_targets = encoder.encode_targets(target_pos, target_hd)
+
+    batch = {
+        "init_cond": torch.from_numpy(encoder.encode_initial_conditions(init_pos, init_hd)),
+        "ego_vel": ego_vel,
+        "target_pos": target_pos,
+        "target_hd": target_hd,
+        "pc_targets_0": torch.from_numpy(encoded_targets.pc_targets[0]),
+        "hdc_targets_0": torch.from_numpy(encoded_targets.hdc_targets[0]),
+    }
+
+    class ConstantLogitModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.logit = torch.nn.Parameter(torch.tensor(0.0))
+
+        def forward(self, init_cond, ego_vel, training=True):
+            batch_size, seq_len = ego_vel.shape[:2]
+            pc_logits = [self.logit.expand(batch_size, seq_len, pc_ens[0].n_cells)]
+            hdc_logits = [self.logit.expand(batch_size, seq_len, hdc_ens[0].n_cells)]
+            return pc_logits, hdc_logits, None, None
+
+    class DummyWriter:
+        def __init__(self):
+            self.scalars = {}
+
+        def add_scalar(self, tag, value, step):
+            self.scalars.setdefault(tag, []).append((value, step))
+
+    class DummyLogger:
+        def info(self, *args, **kwargs):
+            pass
+
+    hooks = SimpleNamespace(
+        tqdm=None,
+        get_step_log_interval=lambda num_steps: 1,
+        evaluate=lambda *args, **kwargs: None,
+    )
+    model = ConstantLogitModel()
+    writer = DummyWriter()
+
+    TrainingSession(cfg, hooks=hooks)._run_epoch(
+        epoch=0,
+        global_step=0,
+        logger=DummyLogger(),
+        writer=writer,
+        device=device,
+        model=model,
+        optimizer=torch.optim.SGD(model.parameters(), lr=0.0),
+        lr_scheduler=None,
+        decoder_params=list(model.parameters()),
+        pc_ens=pc_ens,
+        hdc_ens=hdc_ens,
+        scorer=None,
+        fixed_loader=[batch],
+        fixed_eval_loader=None,
+    )
+
+    for tag in (
+        "train/first_pos_mse_step",
+        "train/first_pos_mse_mean",
+        "train/first_pos_mse_ratio",
+        "train/first_hd_mae_rad_step",
+        "train/first_hd_mae_rad_mean",
+        "train/first_hd_mae_rad_ratio",
+    ):
+        assert tag in writer.scalars
+        assert np.isfinite(writer.scalars[tag][0][0])
 
 
 def test_resolve_save_dir_appends_timestamp_directory():
@@ -1194,7 +1289,10 @@ def test_evaluate_reports_position_mse(monkeypatch, tmp_path):
         "init_pos": torch.zeros(1, 2),
         "init_hd": torch.zeros(1, 1),
         "ego_vel": torch.zeros(1, 3, 3),
-        "target_pos": torch.zeros(1, 3, 2),
+        "target_pos": torch.tensor(
+            [[[0.0, 0.0], [1.0, 1.0], [1.0, 1.0]]],
+            dtype=torch.float32,
+        ),
         "target_hd": torch.zeros(1, 3, 1),
     }
     writer = DummyWriter()
@@ -1212,11 +1310,19 @@ def test_evaluate_reports_position_mse(monkeypatch, tmp_path):
     )
 
     assert "eval/pos_mse" in writer.scalars
+    assert "eval/first_pos_mse" in writer.scalars
+    assert "eval/first_pos_mse_ratio" in writer.scalars
     assert "eval/hd_mae_rad" in writer.scalars
+    assert "eval/first_hd_mae_rad" in writer.scalars
+    assert "eval/first_hd_mae_rad_ratio" in writer.scalars
     assert writer.scalars["eval/pos_mse"][1] == 2
+    assert writer.scalars["eval/first_pos_mse"][1] == 2
     assert writer.scalars["eval/hd_mae_rad"][1] == 2
-    assert writer.scalars["eval/pos_mse"][0] < 1e-6
+    assert writer.scalars["eval/first_hd_mae_rad"][1] == 2
+    assert writer.scalars["eval/pos_mse"][0] > writer.scalars["eval/first_pos_mse"][0]
+    assert writer.scalars["eval/first_pos_mse"][0] < 1e-6
     assert writer.scalars["eval/hd_mae_rad"][0] < 1e-6
+    assert writer.scalars["eval/first_hd_mae_rad"][0] < 1e-6
     assert os.path.normpath(captured["rates_dir"]) == os.path.normpath(
         str(tmp_path / "eval_plots")
     )

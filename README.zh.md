@@ -26,7 +26,7 @@
 
 - 预生成 `train/eval` 数据集，并保留在线生成回退模式。
 - 精简 `train.log` 和 TensorBoard 日志。
-- 在训练与评估中加入 scale-invariant 解析位置解码指标 `pos_mse` 和环形头朝向误差 `hd_mae_rad`。
+- 在训练与评估中记录解码位置和头朝向指标，包括全序列 `pos_mse` / `hd_mae_rad`，以及首个时间步诊断指标 `first_pos_mse` / `first_hd_mae_rad`。
 - 支持分页 rate-map PDF、HDC tuning PDF，以及训练评估和数据生成共用的 3-panel MP4。
 - 可选 bottleneck 单元统计分析，包括 circular-shift grid-score 显著性、split-half reliability 和头朝向选择性。
 - 提供以 CLI 为中心的数据生成、可视化和实验管理流程。
@@ -40,7 +40,7 @@
 
 ## 🧭 概览
 
-本仓库一开始严格对齐 DeepMind 官方 `grid-cells` 实现，并将核心训练流程迁移到 PyTorch。之后又加入了固定数据集生成、评估 PDF、HDC tuning 图、共用的 3-panel MP4 动画、TensorBoard、scale-invariant 解析位置解码指标 `pos_mse`、头朝向指标 `hd_mae_rad` 以及更完整的 CLI 工作流，更适合做可复现实验和后续分析。
+本仓库一开始严格对齐 DeepMind 官方 `grid-cells` 实现，并将核心训练流程迁移到 PyTorch。之后又加入了固定数据集生成、评估 PDF、HDC tuning 图、共用的 3-panel MP4 动画、TensorBoard、全序列与首个时间步的位置/头朝向解码指标，以及更完整的 CLI 工作流，更适合做可复现实验和后续分析。
 
 代码采用以 `grid_cells/` 为根的分层 Python 包结构。根目录提供 `train.py` 和 `generate_data.py` 两个 CLI 入口；库代码导入统一使用 `grid_cells.*` 路径。
 
@@ -117,7 +117,7 @@ tensorboard --logdir results
 
 - `train.log`：精简训练日志。
 - `config.yaml`：应用 CLI 覆盖后的 effective 训练配置，并包含最终结果目录。
-- `tensorboard/`：标量指标和配置快照。
+- `tensorboard/`：标量指标和配置快照，包括首个时间步预测诊断指标。
 - `checkpoints/checkpoint_epoch_XXXX.pt`：按配置在完成指定 epoch 后保存的 save-only checkpoint。
 - `checkpoints/checkpoint_final.pt`：训练正常完成后保存的 final save-only checkpoint。
 - `eval_plots/rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
@@ -168,6 +168,7 @@ grid-cells-torch/
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
 - 统计评估默认参数统一放在 `analysis.*` 下；`analysis.max_eval_trajectories` 会限制 `spatial_stats` 统计分析保留的 eval 子集大小。
 - 训练始终会先在 epoch 0 执行一次 baseline evaluation，然后每完成 `training.eval_every` 个 epoch 再评估一次。`training.eval_plot_every` 按这些 evaluation 调用计数，包括 epoch 0 baseline，用来决定是否导出 PDF 和动画。
+- 首个时间步指标会解码模型在 timestep 0 的输出，并与 `target_pos[:, 0]` / `target_hd[:, 0]` 比较。这个目标是第一步速度更新后的状态，不是用于初始化 LSTM 的原始 `init_pos` / `init_hd`。
 - 常见覆盖示例：
   `python train.py --task.env_size 2.4 --training.batch_size 32`
   `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`

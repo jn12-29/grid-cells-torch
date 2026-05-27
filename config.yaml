@@ -1,30 +1,30 @@
 task:
-  env_size: 2.2          # environment size in meters
-  n_pc: [256]            # list of place cell counts (one ensemble per entry)
-  pc_scale: [0.01]       # place cell Gaussian std dev in meters (one value per ensemble)
-  n_hdc: [12]            # head direction cell count (one ensemble per entry)
-  hdc_concentration: [20.0]  # Von Mises concentration κ (higher = narrower tuning)
-  seq_len: 1000          # trajectory sequence length (timesteps per sample)
-  cells_path: null       # optional fixed cell-center file; train auto-loads <training.datadir>/cells.npz when present
-  neurons_seed: 8341     # RNG seed for cell center placement (matches original paper)
-  targets_type: "softmax"    # training-target encoding: "softmax"/"voronoi"/"sample"/"normalized"
-  lstm_init_type: "softmax"  # LSTM initial-state encoding: same options as targets_type, or "zeros"
-  decode_type: "analytic"    # decoder for PC/HDC logits: "analytic" (scale-invariant for positive scaled softmax-compatible raw scores, fallback weighted) or "weighted_mean"
-  velocity_noise: [0.0, 0.0, 0.0]  # Gaussian noise std devs (σvx, σvy, σω) added to input velocities
-  # Motion model parameters (Sargolini 2006 / Milford 2010 rodent locomotion)
-  motion_dt: 0.02     # time step in seconds
-  motion_b: 0.26      # OU angular velocity decay coefficient
-  motion_mv: 0.1      # mean translational speed (m/s, ~10 cm/s)
-  motion_sv: 0.13     # translational speed std dev (m/s)
-  motion_mw: 0.0      # mean angular velocity (rad/s)
-  motion_sw: 1.6336   # angular velocity std dev (rad/s, ≈ 0.52π)
+  env_size: 2.2 # environment size in meters
+  n_pc: [256] # list of place cell counts (one ensemble per entry)
+  pc_scale: [0.01] # place cell Gaussian std dev in meters (one value per ensemble)
+  n_hdc: [12] # head direction cell count (one ensemble per entry)
+  hdc_concentration: [20.0] # Von Mises concentration κ (higher = narrower tuning)
+  seq_len: 1000 # trajectory sequence length (timesteps per sample)
+  cells_path: null # optional fixed cell-center file; train auto-loads <training.datadir>/cells.npz when present
+  neurons_seed: 8341 # RNG seed for cell center placement (matches original paper)
+  targets_type: "softmax" # training-target encoding: "softmax"/"voronoi"/"sample"/"normalized"
+  lstm_init_type: "softmax" # LSTM initial-state encoding: same options as targets_type, or "zeros"
+  decode_type: "analytic" # decoder for PC/HDC logits: "analytic" (scale-invariant for positive scaled softmax-compatible raw scores, fallback weighted) or "weighted_mean"
+  velocity_noise: [0.0, 0.0, 0.0] # Gaussian noise std devs (σvx, σvy, σω) added to input velocities
+  # Motion model parameters (Sargolini 2006 / Milford 2010 ~rodent locomotion)
+  motion_dt: 0.02 # time step in seconds
+  motion_b: 0.26 # OU angular velocity decay coefficient
+  motion_mv: 0.1 # mean translational speed (m/s, ~10 cm/s)
+  motion_sv: 0.13 # translational speed std dev (m/s)
+  motion_mw: 0.0 # mean angular velocity (rad/s)
+  motion_sw: 1.6336 # angular velocity std dev (rad/s, ≈ 0.52π)
 
 model:
-  nh_lstm: 128           # LSTM hidden size
-  nh_bottleneck: 256     # bottleneck layer size (grid-cell representation dimension)
-  dropout_rate: 0.5      # dropout probability applied after the bottleneck
-  bottleneck_has_bias: false   # whether the bottleneck linear layer includes a bias term
-  init_weight_disp: 0.0        # mean displacement for output-head weight uniform init (0 = default init)
+  nh_lstm: 128 # LSTM hidden size
+  nh_bottleneck: 256 # bottleneck layer size (grid-cell representation dimension)
+  dropout_rate: 0.5 # dropout probability applied after the bottleneck
+  bottleneck_has_bias: false # whether the bottleneck linear layer includes a bias term
+  init_weight_disp: 0.0 # mean displacement for output-head weight uniform init (0 = default init)
 
 training:
   epochs: 200
@@ -32,43 +32,43 @@ training:
   batch_size: 10
   datadir: "data/latest"
   data_path: "data/latest/train.npz"
-  eval_num_samples: 4000        # number of trajectories in the fixed in-memory eval set when no eval file is loaded
+  eval_num_samples: 4000 # number of trajectories in the fixed in-memory eval set when no eval file is loaded
   eval_data_path: "data/latest/eval.npz"
-  optimizer: "rmsprop"            # "rmsprop", "adamw", or "sgd"
+  optimizer: "rmsprop" # "rmsprop", "adamw", or "sgd"
   lr: 1.0e-3
-  lr_scheduler: "cosine"        # default epoch-level scheduler; set "none" to disable, or "step" for StepLR
-  lr_min: 1.0e-5                # minimum learning rate for cosine scheduling
-  lr_step_size: 50              # epoch interval for step scheduling
-  lr_gamma: 0.5                 # learning-rate multiplier for step scheduling
-  momentum: 0.9                 # momentum coefficient (used when optimizer is "rmsprop" or "sgd")
-  adamw_betas: [0.9, 0.999]    # Adam β1 (gradient) and β2 (squared-gradient) decay rates
-  adamw_eps: 1.0e-8            # Adam ε for numerical stability in denominator
+  lr_scheduler: "cosine" # default epoch-level scheduler; set "none" to disable, or "step" for StepLR
+  lr_min: 1.0e-5 # minimum learning rate for cosine scheduling
+  lr_step_size: 50 # epoch interval for step scheduling
+  lr_gamma: 0.5 # learning-rate multiplier for step scheduling
+  momentum: 0.9 # momentum coefficient (used when optimizer is "rmsprop" or "sgd")
+  adamw_betas: [0.9, 0.999] # Adam β1 (gradient) and β2 (squared-gradient) decay rates
+  adamw_eps: 1.0e-8 # Adam ε for numerical stability in denominator
   weight_decay: 1.0e-5
-  grad_clip: 1.0e-5            # gradient clipping max norm
-  num_workers: 4               # default DataLoader worker processes for train/eval data loading
+  grad_clip: 1.0e-5 # gradient clipping max norm
+  num_workers: 4 # default DataLoader worker processes for train/eval data loading
   save_dir: "./results"
-  run_name: null               # optional name suffix appended to the timestamped run directory
-  timestamp_save_dir: true     # prefix run directory with a timestamp; set false to reuse a fixed path
-  checkpoint_every: 0          # save checkpoint every N completed epochs; 0 disables periodic checkpoints
-  save_final_checkpoint: true  # save checkpoints/checkpoint_final.pt after normal training completion
+  run_name: null # optional name suffix appended to the timestamped run directory
+  timestamp_save_dir: true # prefix run directory with a timestamp; set false to reuse a fixed path
+  checkpoint_every: 0 # save checkpoint every N completed epochs; 0 disables periodic checkpoints
+  save_final_checkpoint: true # save checkpoints/checkpoint_final.pt after normal training completion
   use_tqdm: true
   use_tensorboard: true
-  tensorboard_log_every: 0     # log scalar metrics every N steps; 0 = auto (derived from hooks)
-  eval_every: 5                # after baseline epoch-0 eval, run evaluation every N completed epochs
-  eval_loader_batch_size: 256  # DataLoader batch size used for eval forward passes (controls memory)
-  eval_plot_every: 1           # export eval PDFs/animation every N evaluation calls, including epoch 0 (0 = disable)
-  eval_num_workers: 4          # worker processes for eval ratemap scoring and PDF page rendering
-  eval_chunk_size: 32          # units per chunk during eval ratemap scoring/rendering
-  eval_units_per_page: 128     # neurons shown per page in the rate-map PDF
-  eval_pdf_dpi: 100            # DPI for exported eval PDFs (rate maps and HDC tuning curves)
+  tensorboard_log_every: 0 # log scalar metrics every N steps; 0 = auto (derived from hooks)
+  eval_every: 5 # after baseline epoch-0 eval, run evaluation every N completed epochs
+  eval_loader_batch_size: 256 # DataLoader batch size used for eval forward passes (controls memory)
+  eval_plot_every: 1 # export eval PDFs/animation every N evaluation calls, including epoch 0 (0 = disable)
+  eval_num_workers: 4 # worker processes for eval ratemap scoring and PDF page rendering
+  eval_chunk_size: 32 # units per chunk during eval ratemap scoring/rendering
+  eval_units_per_page: 128 # neurons shown per page in the rate-map PDF
+  eval_pdf_dpi: 100 # DPI for exported eval PDFs (rate maps and HDC tuning curves)
 
 visualization:
-  spatial_bins: 32        # grid resolution (bins per side) for spatial firing rate maps
-  directional_bins: 20    # number of direction bins for head-direction tuning curves
-  anim_num_traj: 4        # trajectories to animate in eval outputs and generate_data previews
-  anim_fps: 20            # playback frame rate
-  anim_step: 4            # render every N-th timestep (4 → 4× speed, 1000 steps → 250 frames)
-  anim_workers: 4         # parallel workers for frame rendering when ffmpeg is available
+  spatial_bins: 32 # grid resolution (bins per side) for spatial firing rate maps
+  directional_bins: 20 # number of direction bins for head-direction tuning curves
+  anim_num_traj: 4 # trajectories to animate in eval outputs and generate_data previews
+  anim_fps: 20 # playback frame rate
+  anim_step: 4 # render every N-th timestep (4 → 4× speed, 1000 steps → 250 frames)
+  anim_workers: 4 # parallel workers for frame rendering when ffmpeg is available
 
 analysis:
   enabled: true
@@ -91,11 +91,11 @@ analysis:
   random_seed: 0
 
 data_generation:
-  num_samples: null          # training trajectories to generate; null = steps_per_epoch × batch_size
-  eval_num_samples: null     # eval trajectories to generate; null = training.eval_num_samples
-  num_workers: 8             # parallel worker processes for trajectory generation
-  progress_every: 4          # print generation progress every N worker batches
-  vis_output: null           # file mode train preview PDF path; directory mode uses dataset-local path
-  anim_output: null          # file mode train animation MP4 path; directory mode uses dataset-local path
-  progress_output: null      # file mode train progress plot path; directory mode uses dataset-local path
+  num_samples: null # training trajectories to generate; null = steps_per_epoch × batch_size
+  eval_num_samples: null # eval trajectories to generate; null = training.eval_num_samples
+  num_workers: 8 # parallel worker processes for trajectory generation
+  progress_every: 4 # print generation progress every N worker batches
+  vis_output: null # file mode train preview PDF path; directory mode uses dataset-local path
+  anim_output: null # file mode train animation MP4 path; directory mode uses dataset-local path
+  progress_output: null # file mode train progress plot path; directory mode uses dataset-local path
   eval_progress_output: null # file mode eval progress plot path; directory mode uses dataset-local path

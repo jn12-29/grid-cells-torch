@@ -26,6 +26,14 @@ from grid_cells.analysis.spatial_stats import (
 from grid_cells.cells.decoding import logits_to_cell_activations
 
 
+_METRIC_RATIO_EPS = 1e-12
+
+
+def _metric_ratio(numerator: float, denominator: float) -> float:
+    """Return a stable diagnostic ratio for nonnegative scalar metrics."""
+    return numerator / max(denominator, _METRIC_RATIO_EPS)
+
+
 @dataclass
 class EvaluationHooks:
     """Inject helper functions so the train wrapper keeps monkeypatch compatibility."""
@@ -49,8 +57,12 @@ class EvaluationCollection:
     ratemap_counts: np.ndarray
     eval_pos_mse_sum: float
     eval_pos_batches: int
+    eval_first_pos_mse_sum: float
+    eval_first_pos_batches: int
     eval_hd_mae_sum: float
     eval_hd_batches: int
+    eval_first_hd_mae_sum: float
+    eval_first_hd_batches: int
     infer_seconds: float
     anim_data: Optional[dict]
     hd_list: list
@@ -108,12 +120,22 @@ class Evaluator:
             score_seconds = time.time() - score_start
             eval_seconds = time.time() - eval_start
             eval_pos_mse = collected.eval_pos_mse_sum / max(collected.eval_pos_batches, 1)
+            eval_first_pos_mse = collected.eval_first_pos_mse_sum / max(
+                collected.eval_first_pos_batches,
+                1,
+            )
             eval_hd_mae = collected.eval_hd_mae_sum / max(collected.eval_hd_batches, 1)
+            eval_first_hd_mae = collected.eval_first_hd_mae_sum / max(
+                collected.eval_first_hd_batches,
+                1,
+            )
 
             self._log_metrics(
                 epoch,
                 eval_pos_mse,
+                eval_first_pos_mse,
                 eval_hd_mae,
+                eval_first_hd_mae,
                 score_60,
                 score_90,
                 collected.infer_seconds,
@@ -141,8 +163,12 @@ class Evaluator:
         eval_start = time.time()
         eval_pos_mse_sum = 0.0
         eval_pos_batches = 0
+        eval_first_pos_mse_sum = 0.0
+        eval_first_pos_batches = 0
         eval_hd_mae_sum = 0.0
         eval_hd_batches = 0
+        eval_first_hd_mae_sum = 0.0
+        eval_first_hd_batches = 0
         anim_data = None
         num_anim_traj = int(self.hooks.get_animation_setting("anim_num_traj", 4))
         hd_list = []
@@ -172,15 +198,29 @@ class Evaluator:
                     batch["target_pos"],
                     self.pc_ens,
                 )
+                first_pos_mse = self.hooks.compute_position_mse(
+                    [logits[:, :1, :] for logits in pc_logits],
+                    batch["target_pos"][:, :1, :],
+                    self.pc_ens,
+                )
                 hd_mae = self.hooks.compute_head_direction_mae_rad(
                     hdc_logits,
                     batch["target_hd"],
                     self.hdc_ens,
                 )
+                first_hd_mae = self.hooks.compute_head_direction_mae_rad(
+                    [logits[:, :1, :] for logits in hdc_logits],
+                    batch["target_hd"][:, :1, :],
+                    self.hdc_ens,
+                )
                 eval_pos_mse_sum += float(pos_mse.item())
                 eval_pos_batches += 1
+                eval_first_pos_mse_sum += float(first_pos_mse.item())
+                eval_first_pos_batches += 1
                 eval_hd_mae_sum += float(hd_mae.item())
                 eval_hd_batches += 1
+                eval_first_hd_mae_sum += float(first_hd_mae.item())
+                eval_first_hd_batches += 1
                 self.scorer.accumulate_ratemaps(
                     batch["target_pos"].detach().cpu().numpy(),
                     bottleneck.detach().cpu().numpy(),
@@ -225,8 +265,12 @@ class Evaluator:
             ratemap_counts=ratemap_counts,
             eval_pos_mse_sum=eval_pos_mse_sum,
             eval_pos_batches=eval_pos_batches,
+            eval_first_pos_mse_sum=eval_first_pos_mse_sum,
+            eval_first_pos_batches=eval_first_pos_batches,
             eval_hd_mae_sum=eval_hd_mae_sum,
             eval_hd_batches=eval_hd_batches,
+            eval_first_hd_mae_sum=eval_first_hd_mae_sum,
+            eval_first_hd_batches=eval_first_hd_batches,
             infer_seconds=time.time() - eval_start,
             anim_data=anim_data,
             hd_list=hd_list,
@@ -440,7 +484,9 @@ class Evaluator:
         self,
         epoch: int,
         eval_pos_mse: float,
+        eval_first_pos_mse: float,
         eval_hd_mae: float,
+        eval_first_hd_mae: float,
         score_60,
         score_90,
         infer_seconds: float,
@@ -450,12 +496,21 @@ class Evaluator:
         writer,
     ) -> None:
         """Emit logs and optional TensorBoard scalars for one eval pass."""
+        first_pos_ratio = _metric_ratio(eval_first_pos_mse, eval_pos_mse)
+        first_hd_ratio = _metric_ratio(eval_first_hd_mae, eval_hd_mae)
+
         self.logger.info(
-            "eval epoch=%d  pos_mse=%.6f  hd_mae_rad=%.4f  grid_score_60 max=%.4f  "
+            "eval epoch=%d  pos_mse=%.6f  first_pos_mse=%.6f  "
+            "first_pos_mse_ratio=%.4f  hd_mae_rad=%.4f  first_hd_mae_rad=%.4f  "
+            "first_hd_mae_rad_ratio=%.4f  grid_score_60 max=%.4f  "
             "grid_score_90 max=%.4f  infer=%.1fs  score=%.1fs  total=%.1fs  pdf=%s",
             epoch,
             eval_pos_mse,
+            eval_first_pos_mse,
+            first_pos_ratio,
             eval_hd_mae,
+            eval_first_hd_mae,
+            first_hd_ratio,
             float(score_60.max()),
             float(score_90.max()),
             infer_seconds,
@@ -468,7 +523,11 @@ class Evaluator:
             return
 
         writer.add_scalar("eval/pos_mse", eval_pos_mse, epoch)
+        writer.add_scalar("eval/first_pos_mse", eval_first_pos_mse, epoch)
+        writer.add_scalar("eval/first_pos_mse_ratio", first_pos_ratio, epoch)
         writer.add_scalar("eval/hd_mae_rad", eval_hd_mae, epoch)
+        writer.add_scalar("eval/first_hd_mae_rad", eval_first_hd_mae, epoch)
+        writer.add_scalar("eval/first_hd_mae_rad_ratio", first_hd_ratio, epoch)
         writer.add_scalar("eval/grid_score_60_max", float(score_60.max()), epoch)
         writer.add_scalar("eval/grid_score_90_max", float(score_90.max()), epoch)
         writer.add_scalar("eval/seconds", eval_seconds, epoch)

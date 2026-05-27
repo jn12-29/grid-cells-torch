@@ -26,7 +26,7 @@ README-safe assets are mirrored under `docs/assets/readme/`.
 
 - Pre-generated `train/eval` datasets, with on-the-fly fallback.
 - Compact `train.log` and TensorBoard logging.
-- Scale-invariant analytic decoded-position metric `pos_mse` and circular head-direction error `hd_mae_rad` for training and evaluation.
+- Decoded-position and head-direction metrics for training and evaluation, including whole-sequence `pos_mse` / `hd_mae_rad` and first-step `first_pos_mse` / `first_hd_mae_rad` diagnostics.
 - Paginated rate-map PDFs, HDC tuning PDFs, and shared 3-panel MP4s for eval and generated data.
 - Optional bottleneck-unit statistical analysis with circular-shift grid-score significance, split-half reliability, and head-direction selectivity.
 - CLI-oriented data generation, visualization, and experiment management.
@@ -40,7 +40,7 @@ README-safe assets are mirrored under `docs/assets/readme/`.
 
 ## 🧭 Overview
 
-This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, shared 3-panel MP4 animations, TensorBoard logging, scale-invariant analytic decoded-position (`pos_mse`) and head-direction (`hd_mae_rad`) metrics, and a more complete CLI workflow for reproducible experiments.
+This repository started as a strict PyTorch port of DeepMind's official `grid-cells` codebase. It was later extended with fixed dataset generation, evaluation PDFs, HDC tuning plots, shared 3-panel MP4 animations, TensorBoard logging, whole-sequence and first-step decoded-position/head-direction metrics, and a more complete CLI workflow for reproducible experiments.
 
 The codebase uses a hierarchical Python package rooted at `grid_cells/`. The root-level Python entrypoints are `train.py` and `generate_data.py`; library imports should target `grid_cells.*`.
 
@@ -116,7 +116,7 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 
 - `train.log`: compact training log.
 - `config.yaml`: effective training config after CLI overrides, including the resolved run directory.
-- `tensorboard/`: scalar metrics and config snapshot.
+- `tensorboard/`: scalar metrics and config snapshot, including first-step prediction diagnostics.
 - `checkpoints/checkpoint_epoch_XXXX.pt`: periodic save-only checkpoint after configured completed epochs.
 - `checkpoints/checkpoint_final.pt`: final save-only checkpoint after normal training completion.
 - `eval_plots/rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
@@ -167,6 +167,7 @@ grid-cells-torch/
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
 - Statistical evaluation defaults live under `analysis.*`; `analysis.max_eval_trajectories` caps the eval subset retained for `spatial_stats` analysis.
 - Training always runs a baseline evaluation at epoch 0, then evaluates every `training.eval_every` completed epochs. `training.eval_plot_every` counts these evaluation calls, including the epoch-0 baseline, when deciding whether to export PDFs and animations.
+- First-step metrics decode the model output at timestep 0 and compare it with `target_pos[:, 0]` / `target_hd[:, 0]`. This target is the first post-velocity-update state, not the raw `init_pos` / `init_hd` used to seed the LSTM.
 - Typical override examples:
   `python train.py --task.env_size 2.4 --training.batch_size 32`
   `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`

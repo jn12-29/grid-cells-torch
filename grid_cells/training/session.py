@@ -31,6 +31,14 @@ from grid_cells.cells.model import GridCellsRNN
 from grid_cells.analysis.scores import GridScorer
 
 
+_METRIC_RATIO_EPS = 1e-12
+
+
+def _metric_ratio(numerator: float, denominator: float) -> float:
+    """Return a stable diagnostic ratio for nonnegative scalar metrics."""
+    return numerator / max(denominator, _METRIC_RATIO_EPS)
+
+
 @dataclass
 class TrainingSessionHooks:
     """Inject train-module helpers so the public wrappers keep current behavior."""
@@ -224,7 +232,9 @@ class TrainingSession:
         model.train()
         loss_acc = []
         pos_mse_acc = []
+        first_pos_mse_acc = []
         hd_mae_acc = []
+        first_hd_mae_acc = []
         epoch_start = time.time()
 
         use_tqdm = getattr(self.cfg.training, "use_tqdm", True) and self.hooks.tqdm is not None
@@ -258,9 +268,19 @@ class TrainingSession:
             pc_logits, hdc_logits, _, _ = model(init_cond, batch["ego_vel"], training=True)
             with torch.no_grad():
                 pos_mse = compute_position_mse(pc_logits, batch["target_pos"], pc_ens)
+                first_pos_mse = compute_position_mse(
+                    [logits[:, :1, :] for logits in pc_logits],
+                    batch["target_pos"][:, :1, :],
+                    pc_ens,
+                )
                 hd_mae = compute_head_direction_mae_rad(
                     hdc_logits,
                     batch["target_hd"],
+                    hdc_ens,
+                )
+                first_hd_mae = compute_head_direction_mae_rad(
+                    [logits[:, :1, :] for logits in hdc_logits],
+                    batch["target_hd"][:, :1, :],
                     hdc_ens,
                 )
 
@@ -279,10 +299,14 @@ class TrainingSession:
 
             loss_value = loss.item()
             pos_mse_value = float(pos_mse.item())
+            first_pos_mse_value = float(first_pos_mse.item())
             hd_mae_value = float(hd_mae.item())
+            first_hd_mae_value = float(first_hd_mae.item())
             loss_acc.append(loss_value)
             pos_mse_acc.append(pos_mse_value)
+            first_pos_mse_acc.append(first_pos_mse_value)
             hd_mae_acc.append(hd_mae_value)
+            first_hd_mae_acc.append(first_hd_mae_value)
             global_step += 1
 
             if use_tqdm:
@@ -290,30 +314,44 @@ class TrainingSession:
                     loss=f"{loss_value:.4f}",
                     avg=f"{np.mean(loss_acc):.4f}",
                     pos_mse=f"{pos_mse_value:.6f}",
+                    first_pos=f"{first_pos_mse_value:.6f}",
                     hd_mae=f"{hd_mae_value:.4f}",
+                    first_hd=f"{first_hd_mae_value:.4f}",
                 )
 
             should_log_step = ((step + 1) % step_log_interval == 0) or (step == num_steps - 1)
             if writer is not None and should_log_step:
                 writer.add_scalar("train/loss_step", loss_value, global_step)
                 writer.add_scalar("train/pos_mse_step", pos_mse_value, global_step)
+                writer.add_scalar("train/first_pos_mse_step", first_pos_mse_value, global_step)
                 writer.add_scalar("train/hd_mae_rad_step", hd_mae_value, global_step)
+                writer.add_scalar("train/first_hd_mae_rad_step", first_hd_mae_value, global_step)
 
         epoch_mean = float(np.mean(loss_acc))
         epoch_std = float(np.std(loss_acc))
         epoch_pos_mse = float(np.mean(pos_mse_acc))
+        epoch_first_pos_mse = float(np.mean(first_pos_mse_acc))
         epoch_hd_mae = float(np.mean(hd_mae_acc))
+        epoch_first_hd_mae = float(np.mean(first_hd_mae_acc))
+        epoch_first_pos_ratio = _metric_ratio(epoch_first_pos_mse, epoch_pos_mse)
+        epoch_first_hd_ratio = _metric_ratio(epoch_first_hd_mae, epoch_hd_mae)
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
 
         logger.info(
-            "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  hd_mae_rad=%.4f  "
+            "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  "
+            "first_pos_mse=%.6f  first_pos_mse_ratio=%.4f  hd_mae_rad=%.4f  "
+            "first_hd_mae_rad=%.4f  first_hd_mae_rad_ratio=%.4f  "
             "lr=%.6g  seconds=%.1f",
             epoch,
             epoch_mean,
             epoch_std,
             epoch_pos_mse,
+            epoch_first_pos_mse,
+            epoch_first_pos_ratio,
             epoch_hd_mae,
+            epoch_first_hd_mae,
+            epoch_first_hd_ratio,
             current_lr,
             epoch_time,
         )
@@ -322,7 +360,11 @@ class TrainingSession:
             writer.add_scalar("train/loss_mean", epoch_mean, epoch)
             writer.add_scalar("train/loss_std", epoch_std, epoch)
             writer.add_scalar("train/pos_mse_mean", epoch_pos_mse, epoch)
+            writer.add_scalar("train/first_pos_mse_mean", epoch_first_pos_mse, epoch)
+            writer.add_scalar("train/first_pos_mse_ratio", epoch_first_pos_ratio, epoch)
             writer.add_scalar("train/hd_mae_rad_mean", epoch_hd_mae, epoch)
+            writer.add_scalar("train/first_hd_mae_rad_mean", epoch_first_hd_mae, epoch)
+            writer.add_scalar("train/first_hd_mae_rad_ratio", epoch_first_hd_ratio, epoch)
             writer.add_scalar("train/lr", current_lr, epoch)
             writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
 
