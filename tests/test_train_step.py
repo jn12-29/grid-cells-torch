@@ -1380,6 +1380,8 @@ def test_evaluate_analysis_enabled_writes_grid_stats(monkeypatch, tmp_path):
     assert (stats_dir / "grid_stats_epoch_0003.csv").exists()
     assert (stats_dir / "grid_stats_epoch_0003.npz").exists()
     assert (stats_dir / "grid_stats_summary_epoch_0003.json").exists()
+    assert (stats_dir / "grid_scale_histograms_epoch_0003.pdf").exists()
+    assert (stats_dir / "grid_scale_histograms_epoch_0003.png").exists()
 
 
 class _AnalysisDummyModel:

@@ -43,7 +43,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py --task.targets_type softmax --task.lstm_i
 
 Note: --task.targets_type normalized uses unit-peak independent activation targets, sigmoid/BCE loss, and sigmoid-activation weighted decoding; softmax remains the recommended analytic-decoding contract.
 
-12. Train with lighter statistical analysis settings
+12. Train with lighter statistical analysis settings and population scale histogram/GMM plots
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shuffles 50 --analysis.max_eval_trajectories 64
 
 13. Train with only per-unit Banino-style grid geometry analysis

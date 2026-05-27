@@ -44,7 +44,7 @@ training:
   adamw_betas: [0.9, 0.999]    # Adam β1 (gradient) and β2 (squared-gradient) decay rates
   adamw_eps: 1.0e-8            # Adam ε for numerical stability in denominator
   weight_decay: 1.0e-5
-  grad_clip: 1.0e-3            # gradient clipping max norm
+  grad_clip: 1.0e-5            # gradient clipping max norm
   num_workers: 4               # default DataLoader worker processes for train/eval data loading
   save_dir: "./results"
   run_name: null               # optional name suffix appended to the timestamped run directory

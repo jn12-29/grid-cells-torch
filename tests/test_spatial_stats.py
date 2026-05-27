@@ -188,8 +188,11 @@ def test_small_synthetic_analysis_returns_required_fields():
     assert "median_grid_fdr_scale_m" in result["summary"]
     assert "grid_fdr_scale_discreteness_p" in result["summary"]
     assert "grid_fdr_scale_gmm_best_components" in result["summary"]
+    assert "grid_fdr_scale_gmm_component_variances_bins" in result["summary"]
     assert "grid_threshold_scale_discreteness_p" in result["summary"]
     assert "grid_threshold_scale_gmm_best_components" in result["summary"]
+    assert result["summary"]["analysis_scale_discreteness_bins"] == 13
+    assert result["summary"]["analysis_scale_gmm_max_components"] == 8
     assert result["grid_fdr_scale_discreteness_null"].shape == (500,)
     assert result["grid_threshold_scale_discreteness_null"].shape == (500,)
     assert result["summary"]["analysis_compute_grid_selectivity"] is True
@@ -373,7 +376,7 @@ def test_grid_threshold_population_stats_run_in_parallel_with_fdr_stats():
 
 
 def test_save_spatial_stats_artifacts_writes_contract_files(tmp_path):
-    """Statistical analysis output should include CSV, NPZ, and summary JSON."""
+    """Statistical analysis output should include stats files and scale plots."""
     rng = np.random.default_rng(2)
     scorer = make_scorer()
     positions = rng.uniform(-0.9, 0.9, size=(3, 6, 2))
@@ -393,9 +396,13 @@ def test_save_spatial_stats_artifacts_writes_contract_files(tmp_path):
     assert os.path.basename(paths["csv"]) == "grid_stats_epoch_0007.csv"
     assert os.path.basename(paths["npz"]) == "grid_stats_epoch_0007.npz"
     assert os.path.basename(paths["summary_json"]) == "grid_stats_summary_epoch_0007.json"
+    assert os.path.basename(paths["scale_hist_pdf"]) == "grid_scale_histograms_epoch_0007.pdf"
+    assert os.path.basename(paths["scale_hist_png"]) == "grid_scale_histograms_epoch_0007.png"
     assert os.path.exists(paths["csv"])
     assert os.path.exists(paths["npz"])
     assert os.path.exists(paths["summary_json"])
+    assert os.path.exists(paths["scale_hist_pdf"])
+    assert os.path.exists(paths["scale_hist_png"])
     with np.load(paths["npz"]) as payload:
         assert "grid_fdr_scale_discreteness_null" in payload
         assert "grid_threshold_scale_discreteness_null" in payload

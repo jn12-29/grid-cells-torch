@@ -348,6 +348,10 @@ def analyze_bottleneck_spatial_stats(
         modules,
         fdr_scale_population=fdr_scale_population,
         threshold_scale_population=threshold_scale_population,
+        scale_discreteness_bins=scale_discreteness_bins,
+        scale_discreteness_min_bins=scale_discreteness_min_bins,
+        scale_discreteness_max_bins=scale_discreteness_max_bins,
+        scale_gmm_max_components=scale_gmm_max_components,
         gridness_threshold=gridness_threshold,
     )
     rows = [_row_from_arrays(arrays, index) for index in range(n_units)]
@@ -405,6 +409,14 @@ def save_spatial_stats_artifacts(result, save_dir, epoch):
     csv_path = os.path.join(save_dir, stem + ".csv")
     npz_path = os.path.join(save_dir, stem + ".npz")
     json_path = os.path.join(save_dir, f"grid_stats_summary_epoch_{int(epoch):04d}.json")
+    scale_hist_pdf_path = os.path.join(
+        save_dir,
+        f"grid_scale_histograms_epoch_{int(epoch):04d}.pdf",
+    )
+    scale_hist_png_path = os.path.join(
+        save_dir,
+        f"grid_scale_histograms_epoch_{int(epoch):04d}.png",
+    )
 
     with open(csv_path, "w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=result["fields"])
@@ -432,7 +444,188 @@ def save_spatial_stats_artifacts(result, save_dir, epoch):
         json.dump(result["summary"], handle, indent=2, sort_keys=True)
         handle.write("\n")
 
-    return {"csv": csv_path, "npz": npz_path, "summary_json": json_path}
+    paths = {"csv": csv_path, "npz": npz_path, "summary_json": json_path}
+    if _save_grid_scale_histogram_plot(
+        result,
+        pdf_path=scale_hist_pdf_path,
+        png_path=scale_hist_png_path,
+    ):
+        paths["scale_hist_pdf"] = scale_hist_pdf_path
+        paths["scale_hist_png"] = scale_hist_png_path
+    return paths
+
+
+def _save_grid_scale_histogram_plot(result, *, pdf_path, png_path):
+    arrays = result.get("arrays", {})
+    required = {"grid_scale_bins", "is_grid_fdr", "is_grid_threshold"}
+    if not required.issubset(arrays):
+        return False
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    summary = result.get("summary", {})
+    grid_scale_bins = np.asarray(arrays["grid_scale_bins"], dtype=np.float64)
+    populations = [
+        (
+            "grid_fdr",
+            "FDR grid units",
+            grid_scale_bins[np.asarray(arrays["is_grid_fdr"], dtype=bool)],
+        ),
+        (
+            "grid_threshold",
+            "Threshold grid units",
+            grid_scale_bins[np.asarray(arrays["is_grid_threshold"], dtype=bool)],
+        ),
+    ]
+    n_bins = int(summary.get("analysis_scale_discreteness_bins", 13))
+    range_min = summary.get("analysis_scale_discreteness_min_bins", None)
+    range_max = summary.get("analysis_scale_discreteness_max_bins", None)
+    hist_range = None
+    if range_min is not None and range_max is not None:
+        hist_range = (float(range_min), float(range_max))
+    plot_range = _scale_histogram_plot_range(
+        [values for _, _, values in populations],
+        hist_range,
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.2), constrained_layout=True)
+    for ax, (prefix, title, values) in zip(axes, populations):
+        _plot_scale_population_histogram(
+            ax,
+            values,
+            prefix=prefix,
+            title=title,
+            summary=summary,
+            n_bins=n_bins,
+            hist_range=plot_range,
+        )
+
+    fig.suptitle("Population grid-scale distribution")
+    fig.savefig(pdf_path, dpi=150)
+    fig.savefig(png_path, dpi=150)
+    plt.close(fig)
+    return True
+
+
+def _scale_histogram_plot_range(value_sets, configured_range):
+    finite_values = []
+    for values in value_sets:
+        values = np.asarray(values, dtype=np.float64)
+        finite_values.append(values[np.isfinite(values)])
+    finite = (
+        np.concatenate(finite_values)
+        if any(values.size for values in finite_values)
+        else np.empty(0, dtype=np.float64)
+    )
+    bounds = []
+    if configured_range is not None:
+        bounds.extend([configured_range[0], configured_range[1]])
+    if finite.size:
+        bounds.extend([float(np.min(finite)), float(np.max(finite))])
+    if not bounds:
+        return configured_range
+
+    low = float(np.min(bounds))
+    high = float(np.max(bounds))
+    if low == high:
+        padding = max(1.0, abs(low) * 0.05)
+        low -= padding
+        high += padding
+    return low, high
+
+
+def _plot_scale_population_histogram(
+    ax,
+    values,
+    *,
+    prefix,
+    title,
+    summary,
+    n_bins,
+    hist_range,
+):
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        ax.text(0.5, 0.5, "No valid scales", ha="center", va="center")
+        ax.set_title(f"{title} (n=0)")
+        ax.set_xlabel("Grid scale (SAC bins)")
+        ax.set_ylabel("Units")
+        return
+
+    counts, edges, _ = ax.hist(
+        values,
+        bins=max(1, int(n_bins)),
+        range=hist_range,
+        color="#5B8DB8",
+        alpha=0.72,
+        edgecolor="white",
+    )
+    ax.set_title(f"{title} (n={values.size})")
+    ax.set_xlabel("Grid scale (SAC bins)")
+    ax.set_ylabel("Units")
+
+    _plot_gmm_overlay(
+        ax,
+        prefix=prefix,
+        summary=summary,
+        values=values,
+        edges=edges,
+        max_count=float(np.max(counts)) if counts.size else 0.0,
+    )
+
+
+def _plot_gmm_overlay(ax, *, prefix, summary, values, edges, max_count):
+    means = summary.get(f"{prefix}_scale_gmm_component_means_bins")
+    weights = summary.get(f"{prefix}_scale_gmm_component_weights")
+    variances = summary.get(f"{prefix}_scale_gmm_component_variances_bins")
+    if means is None or weights is None or variances is None:
+        return
+
+    means = np.asarray(means, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    variances = np.asarray(variances, dtype=np.float64)
+    if means.size == 0 or not (means.size == weights.size == variances.size):
+        return
+
+    valid = np.isfinite(means) & np.isfinite(weights) & np.isfinite(variances)
+    valid &= variances > 0.0
+    means = means[valid]
+    weights = weights[valid]
+    variances = variances[valid]
+    if means.size == 0:
+        return
+
+    x_min = float(edges[0])
+    x_max = float(edges[-1])
+    x = np.linspace(x_min, x_max, 400)
+    bin_width = float(edges[1] - edges[0]) if edges.size > 1 else 1.0
+    density_scale = values.size * bin_width
+    components = []
+    for mean, weight, variance in zip(means, weights, variances):
+        component = weight * _normal_pdf(x, mean, np.sqrt(variance)) * density_scale
+        components.append(component)
+    total = np.sum(np.stack(components, axis=0), axis=0)
+
+    ax.plot(x, total, color="#C43E35", linewidth=2.0, label="GMM")
+    for mean, component in zip(means, components):
+        ax.plot(x, component, color="#C43E35", linewidth=1.0, alpha=0.35)
+        ax.axvline(mean, color="#2F4B7C", linestyle="--", linewidth=1.0, alpha=0.75)
+    if max_count > 0.0:
+        ax.set_ylim(top=max(max_count, float(np.max(total))) * 1.18)
+    best_components = summary.get(f"{prefix}_scale_gmm_best_components")
+    best_bic = summary.get(f"{prefix}_scale_gmm_best_bic")
+    if best_components is not None and best_bic is not None:
+        ax.legend(title=f"k={best_components}, BIC={best_bic:.1f}", frameon=False)
+    else:
+        ax.legend(frameon=False)
+
+
+def _normal_pdf(x, mean, std):
+    return np.exp(-0.5 * ((x - mean) / std) ** 2) / (std * np.sqrt(2.0 * np.pi))
 
 
 def _prepare_inputs(positions, head_directions, activations):
@@ -637,6 +830,10 @@ def _summary(
     *,
     fdr_scale_population,
     threshold_scale_population,
+    scale_discreteness_bins,
+    scale_discreteness_min_bins,
+    scale_discreteness_max_bins,
+    scale_gmm_max_components,
     gridness_threshold,
 ):
     grid_scale_bins = np.asarray(arrays["grid_scale_bins"], dtype=np.float64)
@@ -666,6 +863,10 @@ def _summary(
         "median_split_half_corr": _safe_nanmedian(arrays["split_half_corr"]),
         "analysis_num_shuffles": int(num_shuffles),
         "analysis_gridness_threshold": float(gridness_threshold),
+        "analysis_scale_discreteness_bins": int(scale_discreteness_bins),
+        "analysis_scale_discreteness_min_bins": float(scale_discreteness_min_bins),
+        "analysis_scale_discreteness_max_bins": float(scale_discreteness_max_bins),
+        "analysis_scale_gmm_max_components": int(scale_gmm_max_components),
         "analysis_compute_grid_selectivity": bool(modules.compute_grid_selectivity),
         "analysis_compute_grid_geometry": bool(modules.compute_grid_geometry),
         "analysis_compute_shuffle_significance": bool(
@@ -739,6 +940,7 @@ def _prefixed_scale_population_summary(prefix, scale_population):
         f"{prefix}_scale_gmm_component_means_bins": gmm["means"],
         f"{prefix}_scale_gmm_component_means_m": scale_population["gmm_means_m"],
         f"{prefix}_scale_gmm_component_weights": gmm["weights"],
+        f"{prefix}_scale_gmm_component_variances_bins": gmm["variances"],
         f"{prefix}_scale_gmm_bic": gmm["bic"],
     }
 
