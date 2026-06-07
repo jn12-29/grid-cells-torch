@@ -58,8 +58,11 @@ CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_grid_selectivity false
 16. Train with the default cosine learning-rate scheduler made explicit
 CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
+17. Train with infinity-norm gradient clipping across all model parameters
+CUDA_VISIBLE_DEVICES=0 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
+
 Monitor
 
-17. Inspect metrics in TensorBoard
+18. Inspect metrics in TensorBoard
 tensorboard --logdir results
 EOF

@@ -39,6 +39,61 @@ def _metric_ratio(numerator: float, denominator: float) -> float:
     return numerator / max(denominator, _METRIC_RATIO_EPS)
 
 
+def _normalize_grad_clip_mode(mode: str) -> str:
+    """Return the canonical gradient clipping mode name."""
+    mode = str(mode).lower()
+    if mode in {"value", "valueclip"}:
+        return "value"
+    if mode in {"norm", "normclip"}:
+        return "norm"
+    raise ValueError(f"Unsupported gradient clipping mode: {mode}")
+
+
+def _select_grad_clip_params(model, decoder_params, scope: str):
+    """Return the model parameters selected for gradient clipping."""
+    scope = str(scope).lower()
+    if scope in {"all", "model"}:
+        return list(model.parameters())
+    if scope == "decoder":
+        return list(decoder_params)
+    raise ValueError(f"Unsupported gradient clipping scope: {scope}")
+
+
+def _resolve_grad_clip_norm_type(norm_type):
+    """Resolve a CLI/YAML norm type value for torch gradient norm clipping."""
+    if isinstance(norm_type, str):
+        normalized = norm_type.lower()
+        if normalized in {"inf", "infinity"}:
+            return float("inf")
+        return float(norm_type)
+    return float(norm_type)
+
+
+def _clip_gradients(model, decoder_params, cfg) -> None:
+    """Clip gradients using the configured method and parameter scope."""
+    clip_value = float(cfg.training.grad_clip)
+    if not np.isfinite(clip_value):
+        raise ValueError("training.grad_clip must be finite.")
+    if clip_value < 0.0:
+        raise ValueError("training.grad_clip must be non-negative.")
+
+    mode = _normalize_grad_clip_mode(getattr(cfg.training, "grad_clip_mode", "norm"))
+    params = _select_grad_clip_params(
+        model,
+        decoder_params,
+        getattr(cfg.training, "grad_clip_scope", "decoder"),
+    )
+
+    if mode == "value":
+        torch.nn.utils.clip_grad_value_(params, clip_value)
+        return
+
+    norm_type = _resolve_grad_clip_norm_type(
+        getattr(cfg.training, "grad_clip_norm_type", 2.0)
+    )
+    torch.nn.utils.clip_grad_norm_(params, clip_value, norm_type=norm_type)
+
+
 @dataclass
 class TrainingSessionHooks:
     """Inject train-module helpers so the public wrappers keep current behavior."""
@@ -83,6 +138,13 @@ class TrainingSession:
         logger.info("Using device: %s", device)
         logger.info("Optimizer: %s", getattr(self.cfg.training, "optimizer", "rmsprop"))
         logger.info("Learning-rate scheduler: %s", getattr(self.cfg.training, "lr_scheduler", "cosine"))
+        logger.info(
+            "Gradient clipping: mode=%s  scope=%s  value=%s  norm_type=%s",
+            getattr(self.cfg.training, "grad_clip_mode", "norm"),
+            getattr(self.cfg.training, "grad_clip_scope", "decoder"),
+            self.cfg.training.grad_clip,
+            getattr(self.cfg.training, "grad_clip_norm_type", 2.0),
+        )
         logger.info("Run directory: %s", self.cfg.training.save_dir)
         logger.info(
             "Progress bar enabled: %s",
@@ -313,7 +375,7 @@ class TrainingSession:
             )
 
             loss.backward()
-            torch.nn.utils.clip_grad_value_(decoder_params, self.cfg.training.grad_clip)
+            _clip_gradients(model, decoder_params, self.cfg)
             optimizer.step()
 
             loss_value = loss.item()

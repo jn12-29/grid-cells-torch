@@ -34,7 +34,11 @@ from train import (
     resolve_save_dir,
     save_config,
 )
-from grid_cells.training.session import TrainingSession, TrainingSessionHooks
+from grid_cells.training.session import (
+    TrainingSession,
+    TrainingSessionHooks,
+    _clip_gradients,
+)
 from grid_cells.training.cli import parse_train_args
 from grid_cells.training.runtime import save_checkpoint
 
@@ -84,6 +88,9 @@ def make_cfg():
             adamw_eps=1e-8,
             weight_decay=1e-5,
             grad_clip=1e-5,
+            grad_clip_mode="norm",
+            grad_clip_scope="decoder",
+            grad_clip_norm_type="2.0",
             first_pos_loss_multiplier=1.0,
             checkpoint_every=0,
             save_final_checkpoint=True,
@@ -128,12 +135,7 @@ def test_training_step_with_preencoded_batch():
     pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
     hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
     model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model)).to(device)
-    optimizer = torch.optim.RMSprop(
-        model.parameters(),
-        lr=cfg.training.lr,
-        momentum=cfg.training.momentum,
-        weight_decay=cfg.training.weight_decay,
-    )
+    optimizer, decoder_params = build_optimizer(model, cfg)
 
     loader = get_dataloader(cfg, pc_ens=pc_ens, hdc_ens=hdc_ens)
     batch = next(iter(loader))
@@ -160,7 +162,7 @@ def test_training_step_with_preencoded_batch():
     )
 
     loss.backward()
-    torch.nn.utils.clip_grad_value_(model.parameters(), cfg.training.grad_clip)
+    _clip_gradients(model, decoder_params, cfg)
     optimizer.step()
 
     assert np.isfinite(loss.item())
@@ -291,6 +293,103 @@ def test_step_log_interval_caps_step_scalars_per_epoch():
     assert get_step_log_interval(1000) == 100
     assert get_step_log_interval(95) == 10
     assert get_step_log_interval(9) == 1
+
+
+class TwoParamModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.core = torch.nn.Parameter(torch.tensor([0.0, 0.0]))
+        self.decoder = torch.nn.Parameter(torch.tensor([0.0, 0.0]))
+
+
+def test_clip_gradients_defaults_to_decoder_norm_clipping():
+    """Default gradient clipping should rescale decoder gradients by L2 norm."""
+    cfg = make_cfg()
+    cfg.training.grad_clip = 5.0
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([100.0, 1.0])
+    model.decoder.grad = torch.tensor([6.0, 8.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == [100.0, 1.0]
+    assert model.decoder.grad.tolist() == pytest.approx([3.0, 4.0])
+
+
+def test_clip_gradients_missing_mode_falls_back_to_norm():
+    """Older configs without grad_clip_mode should use the current norm default."""
+    cfg = make_cfg()
+    delattr(cfg.training, "grad_clip_mode")
+    cfg.training.grad_clip = 5.0
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([100.0, 1.0])
+    model.decoder.grad = torch.tensor([6.0, 8.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == [100.0, 1.0]
+    assert model.decoder.grad.tolist() == pytest.approx([3.0, 4.0])
+
+
+def test_clip_gradients_can_use_infinity_norm_across_all_params():
+    """Infinity-norm clipping should rescale all selected gradients together."""
+    cfg = make_cfg()
+    cfg.training.grad_clip = 10.0
+    cfg.training.grad_clip_mode = "norm"
+    cfg.training.grad_clip_scope = "all"
+    cfg.training.grad_clip_norm_type = "inf"
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([100.0, 1.0])
+    model.decoder.grad = torch.tensor([-50.0, 0.5])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == pytest.approx([10.0, 0.1])
+    assert model.decoder.grad.tolist() == pytest.approx([-5.0, 0.05])
+
+
+def test_clip_gradients_accepts_aliases_and_numeric_norm_type():
+    """Gradient clipping should accept documented CLI-friendly aliases."""
+    cfg = make_cfg()
+    cfg.training.grad_clip = 5.0
+    cfg.training.grad_clip_mode = "normclip"
+    cfg.training.grad_clip_scope = "model"
+    cfg.training.grad_clip_norm_type = "2.0"
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([3.0, 4.0])
+    model.decoder.grad = torch.tensor([0.0, 0.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == pytest.approx([3.0, 4.0])
+    assert model.decoder.grad.tolist() == pytest.approx([0.0, 0.0])
+
+    cfg.training.grad_clip_mode = "valueclip"
+    cfg.training.grad_clip_scope = "decoder"
+    model.core.grad = torch.tensor([100.0, 1.0])
+    model.decoder.grad = torch.tensor([100.0, -100.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == [100.0, 1.0]
+    assert model.decoder.grad.tolist() == [5.0, -5.0]
+
+
+def test_clip_gradients_rejects_unknown_mode_and_scope():
+    """Unsupported gradient clipping config should fail before optimizer.step."""
+    cfg = make_cfg()
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([1.0, 1.0])
+    model.decoder.grad = torch.tensor([1.0, 1.0])
+
+    cfg.training.grad_clip_mode = "median"
+    with pytest.raises(ValueError, match="Unsupported gradient clipping mode"):
+        _clip_gradients(model, [model.decoder], cfg)
+
+    cfg.training.grad_clip_mode = "value"
+    cfg.training.grad_clip_scope = "heads"
+    with pytest.raises(ValueError, match="Unsupported gradient clipping scope"):
+        _clip_gradients(model, [model.decoder], cfg)
 
 
 def test_build_optimizer_defaults_to_rmsprop():
@@ -828,6 +927,12 @@ def test_register_config_overrides_supports_shared_sections():
             "1e-5",
             "--training.first_pos_loss_multiplier",
             "50",
+            "--training.grad_clip_mode",
+            "norm",
+            "--training.grad_clip_scope",
+            "all",
+            "--training.grad_clip_norm_type",
+            "inf",
             "--training.datadir",
             "data/custom",
             "--training.checkpoint_every",
@@ -869,6 +974,9 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.training__lr_scheduler == "cosine"
     assert args.training__lr_min == 1e-5
     assert args.training__first_pos_loss_multiplier == 50.0
+    assert args.training__grad_clip_mode == "norm"
+    assert args.training__grad_clip_scope == "all"
+    assert args.training__grad_clip_norm_type == "inf"
     assert args.training__datadir == "data/custom"
     assert args.training__checkpoint_every == 5
     assert args.training__save_final_checkpoint is False
@@ -912,6 +1020,12 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "0.8",
             "--training.first_pos_loss_multiplier",
             "25",
+            "--training.grad_clip_mode",
+            "value",
+            "--training.grad_clip_scope",
+            "decoder",
+            "--training.grad_clip_norm_type",
+            "2.0",
             "--training.datadir",
             "data/custom",
             "--training.checkpoint_every",
@@ -940,6 +1054,9 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__lr_step_size == 10
     assert args.training__lr_gamma == 0.8
     assert args.training__first_pos_loss_multiplier == 25.0
+    assert args.training__grad_clip_mode == "value"
+    assert args.training__grad_clip_scope == "decoder"
+    assert args.training__grad_clip_norm_type == "2.0"
     assert args.training__datadir == "data/custom"
     assert args.training__checkpoint_every == 5
     assert args.training__save_final_checkpoint is False

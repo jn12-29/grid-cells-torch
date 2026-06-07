@@ -79,6 +79,9 @@ python train.py --training.datadir data/datasets/<dataset-id>
 # or make the default epoch-level learning-rate scheduler explicit
 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
+# or rescale all gradients by the largest absolute gradient value
+python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
+
 # or override the shared animation config for eval videos
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
@@ -153,6 +156,7 @@ grid-cells-torch/
 - Checkpoints are save-only analysis artifacts; training resume is not implemented yet.
 - Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, `adam`, and `sgd`; `training.momentum` applies to RMSprop and SGD.
 - Learning-rate scheduling defaults to `training.lr_scheduler: "cosine"`; use `--training.lr_scheduler none` to disable it or `--training.lr_scheduler step` for StepLR.
+- Gradient clipping uses `training.grad_clip` as the threshold and defaults to `training.grad_clip_mode: "norm"` on the `decoder` scope. `training.grad_clip_mode` supports `value` elementwise clipping and `norm` proportional rescaling; `training.grad_clip_scope` supports `decoder` and `all`; `training.grad_clip_norm_type: "inf"` uses the largest absolute gradient value for norm clipping.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
 - `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz`, `<datadir>/eval.npz`, and `<datadir>/cells.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.

@@ -80,6 +80,9 @@ python train.py --training.datadir data/datasets/<dataset-id>
 # 或显式指定默认按 epoch 更新的学习率调度
 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
 
+# 或按最大绝对梯度值等比缩放全部梯度
+python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
+
 # 也可以覆盖评估视频共用的动画参数
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
@@ -154,6 +157,7 @@ grid-cells-torch/
 - Checkpoint 当前是 save-only 分析产物，尚未实现从 checkpoint 恢复训练。
 - 优化器：`training.optimizer` 支持 `rmsprop`、`adamw`、`adam` 和 `sgd`；`training.momentum` 作用于 RMSprop 和 SGD。
 - 学习率调度默认使用 `training.lr_scheduler: "cosine"`；可用 `--training.lr_scheduler none` 关闭，或用 `--training.lr_scheduler step` 切换到 StepLR。
+- 梯度裁剪使用 `training.grad_clip` 作为阈值，默认是 `training.grad_clip_mode: "norm"` 且作用于 `decoder` 范围；`training.grad_clip_mode` 支持 `value` 逐元素裁剪和 `norm` 等比缩放，`training.grad_clip_scope` 支持 `decoder` 和 `all`，`training.grad_clip_norm_type: "inf"` 表示按最大绝对梯度值做 norm clipping。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。
 - `train.py --training.datadir data/datasets/<dataset-id>` 会优先加载 `<datadir>/train.npz`、`<datadir>/eval.npz` 和 `<datadir>/cells.npz`，再回退到 legacy 的 `training.data_path` 与 `training.eval_data_path` 字段。

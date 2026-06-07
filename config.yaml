@@ -44,7 +44,10 @@ training:
   adamw_betas: [0.9, 0.999] # Adam/AdamW β1 (gradient) and β2 (squared-gradient) decay rates
   adamw_eps: 1.0e-8 # Adam/AdamW ε for numerical stability in denominator
   weight_decay: 1.0e-5
-  grad_clip: 1.0e-5 # gradient clipping max norm
+  grad_clip: 1.0e-5 # gradient clipping threshold
+  grad_clip_mode: "norm" # "norm" rescales selected gradients; "value" clamps individual gradient elements
+  grad_clip_scope: "decoder" # "decoder" clips bottleneck+heads; "all" clips every trainable model parameter
+  grad_clip_norm_type: 2.0 # norm type for "norm" mode; set "inf" for max-absolute-value based scaling
   first_pos_loss_multiplier: 1.0 # PC timestep-0 target-loss weight; 1.0 preserves uniform time weighting
   num_workers: 4 # default DataLoader worker processes for train/eval data loading
   save_dir: "./results"
