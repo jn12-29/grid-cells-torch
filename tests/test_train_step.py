@@ -324,6 +324,30 @@ def test_build_optimizer_can_switch_to_adamw():
     assert optimizer.defaults["eps"] == 1e-6
 
 
+def test_build_optimizer_can_switch_to_adam():
+    """Optimizer builder should support Adam via config."""
+    cfg = make_cfg()
+    cfg.training.optimizer = "adam"
+    cfg.training.adamw_betas = [0.85, 0.97]
+    cfg.training.adamw_eps = 1e-7
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+
+    optimizer, decoder_params = build_optimizer(model, cfg)
+
+    assert type(optimizer) is torch.optim.Adam
+    assert decoder_params
+    assert optimizer.defaults["lr"] == cfg.training.lr
+    assert optimizer.defaults["betas"] == (0.85, 0.97)
+    assert optimizer.defaults["eps"] == 1e-7
+    assert optimizer.defaults["weight_decay"] == 0.0
+    assert [group["weight_decay"] for group in optimizer.param_groups] == [
+        0.0,
+        cfg.training.weight_decay,
+    ]
+
+
 def test_build_optimizer_can_switch_to_sgd():
     """Optimizer builder should support SGD via config."""
     cfg = make_cfg()

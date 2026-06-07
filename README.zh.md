@@ -69,7 +69,7 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 python train.py
 
 # 或指定优化器
-python train.py --training.optimizer sgd --training.momentum 0.9
+python train.py --training.optimizer adam
 
 # 或每完成 5 个 epoch 保存一次 periodic checkpoint
 python train.py --training.checkpoint_every 5
@@ -152,7 +152,7 @@ grid-cells-torch/
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
 - 每次训练都会把应用 CLI 覆盖后的 effective config 保存到 `<run directory>/config.yaml`。
 - Checkpoint 当前是 save-only 分析产物，尚未实现从 checkpoint 恢复训练。
-- 优化器：`training.optimizer` 支持 `rmsprop`、`adamw` 和 `sgd`；`training.momentum` 作用于 RMSprop 和 SGD。
+- 优化器：`training.optimizer` 支持 `rmsprop`、`adamw`、`adam` 和 `sgd`；`training.momentum` 作用于 RMSprop 和 SGD。
 - 学习率调度默认使用 `training.lr_scheduler: "cosine"`；可用 `--training.lr_scheduler none` 关闭，或用 `--training.lr_scheduler step` 切换到 StepLR。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。

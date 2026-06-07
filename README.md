@@ -9,11 +9,11 @@ A faithful PyTorch port of [`google-deepmind/grid-cells`](https://github.com/goo
 Reference run: `results/20260416-040934`, snapshot at `epoch 12`.
 README-safe assets are mirrored under `docs/assets/readme/`.
 
-| Metric | Value |
-|---|---:|
-| `pos_mse` | `0.027598` |
-| `grid_score_60 max` | `1.3284` |
-| `grid_score_90 max` | `1.5351` |
+| Metric              |      Value |
+| ------------------- | ---------: |
+| `pos_mse`           | `0.027598` |
+| `grid_score_60 max` |   `1.3284` |
+| `grid_score_90 max` |   `1.5351` |
 
 ![Epoch 12 evaluation preview](docs/assets/readme/eval_animation_epoch_0012_thumb.png)
 
@@ -33,10 +33,10 @@ README-safe assets are mirrored under `docs/assets/readme/`.
 
 ## 📚 References
 
-| Reference | Role |
-|---|---|
-| Banino et al. (2018), [Vector-based navigation using grid-like representations in artificial agents](https://doi.org/10.1038/s41586-018-0102-6) | Original Nature paper |
-| DeepMind official implementation, [google-deepmind/grid-cells](https://github.com/google-deepmind/grid-cells) | Original codebase this repo started from |
+| Reference                                                                                                                                       | Role                                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| Banino et al. (2018), [Vector-based navigation using grid-like representations in artificial agents](https://doi.org/10.1038/s41586-018-0102-6) | Original Nature paper                    |
+| DeepMind official implementation, [google-deepmind/grid-cells](https://github.com/google-deepmind/grid-cells)                                   | Original codebase this repo started from |
 
 ## 🧭 Overview
 
@@ -68,7 +68,7 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 python train.py
 
 # or choose an optimizer
-python train.py --training.optimizer sgd --training.momentum 0.9
+python train.py --training.optimizer adam
 
 # or save periodic checkpoints every 5 completed epochs
 python train.py --training.checkpoint_every 5
@@ -151,7 +151,7 @@ grid-cells-torch/
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - Each training run saves the effective config to `<run directory>/config.yaml` after applying CLI overrides.
 - Checkpoints are save-only analysis artifacts; training resume is not implemented yet.
-- Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, and `sgd`; `training.momentum` applies to RMSprop and SGD.
+- Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, `adam`, and `sgd`; `training.momentum` applies to RMSprop and SGD.
 - Learning-rate scheduling defaults to `training.lr_scheduler: "cosine"`; use `--training.lr_scheduler none` to disable it or `--training.lr_scheduler step` for StepLR.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
@@ -183,4 +183,4 @@ grid-cells-torch/
 
 ## 🙏 Acknowledgements
 
-This project was developed with substantial help from Claude Code and OpenCode. 
+This project was developed with substantial help from Coding Agents.

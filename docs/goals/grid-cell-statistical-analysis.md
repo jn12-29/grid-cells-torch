@@ -262,7 +262,7 @@ If implementation changes behavior significantly, update:
 
 - `README.md`
 - `README.zh.md`
-- `CLAUDE.md`
+- `AGENTS.md`
 - `run_scripts.sh` if a new example command is needed
 
 Documentation should describe current final behavior only, not old-vs-new migration history.

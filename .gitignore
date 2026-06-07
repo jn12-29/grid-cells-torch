@@ -38,3 +38,4 @@ test/
 # code tools
 .claude/
 .codex/
+.agents/

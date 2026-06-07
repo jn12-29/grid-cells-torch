@@ -109,6 +109,17 @@ def build_optimizer(model, cfg):
         )
         return optimizer, decoder_params
 
+    if optimizer_name == "adam":
+        beta1, beta2 = getattr(cfg.training, "adamw_betas", [0.9, 0.999])
+        optimizer = torch.optim.Adam(
+            param_groups,
+            lr=cfg.training.lr,
+            betas=(beta1, beta2),
+            eps=getattr(cfg.training, "adamw_eps", 1e-8),
+            weight_decay=0.0,
+        )
+        return optimizer, decoder_params
+
     if optimizer_name == "sgd":
         optimizer = torch.optim.SGD(
             param_groups,
