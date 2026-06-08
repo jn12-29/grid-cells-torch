@@ -32,11 +32,136 @@ from grid_cells.analysis.scores import GridScorer
 
 
 _METRIC_RATIO_EPS = 1e-12
+_GRAD_MONITOR_MODULE_NAMES = (
+    "state_init",
+    "cell_init",
+    "lstm",
+    "bottleneck",
+    "pc_heads",
+    "hdc_heads",
+)
 
 
 def _metric_ratio(numerator: float, denominator: float) -> float:
     """Return a stable diagnostic ratio for nonnegative scalar metrics."""
     return numerator / max(denominator, _METRIC_RATIO_EPS)
+
+
+def _grad_monitor_param_groups(model):
+    """Return model submodules tracked by the gradient monitor."""
+    groups = {}
+    for module_name in _GRAD_MONITOR_MODULE_NAMES:
+        module = getattr(model, module_name, None)
+        if module is None or not hasattr(module, "parameters"):
+            continue
+        params = list(module.parameters())
+        if params:
+            groups[module_name] = params
+    return groups
+
+
+def _collect_grad_group_stats(params, norm_type: float):
+    """Return aggregate norm and max-absolute-gradient for one parameter group."""
+    grads = [
+        param.grad.detach()
+        for param in params
+        if param.grad is not None and param.grad.numel() > 0
+    ]
+    if not grads:
+        return None
+
+    max_abs = max(float(grad.abs().max().item()) for grad in grads)
+    if norm_type == float("inf"):
+        grad_norm = max_abs
+    else:
+        per_param_norms = torch.stack(
+            [torch.linalg.vector_norm(grad, ord=norm_type) for grad in grads]
+        )
+        grad_norm = float(
+            torch.linalg.vector_norm(per_param_norms, ord=norm_type).item()
+        )
+
+    return {
+        "norm": float(grad_norm),
+        "max_abs": float(max_abs),
+    }
+
+
+def _collect_grad_monitor_stats(model, norm_type: float):
+    """Return gradient stats for all monitored model submodules with gradients."""
+    stats = {}
+    for module_name, params in _grad_monitor_param_groups(model).items():
+        group_stats = _collect_grad_group_stats(params, norm_type)
+        if group_stats is not None:
+            stats[module_name] = group_stats
+    return stats
+
+
+def _merge_grad_monitor_stats(pre_clip_stats, post_clip_stats):
+    """Combine pre/post clipping stats into the public TensorBoard metric shape."""
+    merged = {}
+    for module_name, pre_stats in pre_clip_stats.items():
+        post_stats = post_clip_stats.get(module_name)
+        if post_stats is None:
+            continue
+        merged[module_name] = {
+            "pre_clip_norm": pre_stats["norm"],
+            "post_clip_norm": post_stats["norm"],
+            "pre_clip_max_abs": pre_stats["max_abs"],
+            "post_clip_max_abs": post_stats["max_abs"],
+            "clip_ratio": _metric_ratio(post_stats["norm"], pre_stats["norm"]),
+        }
+    return merged
+
+
+def _accumulate_grad_monitor_stats(accumulator, grad_stats) -> None:
+    """Append one sampled grad-stat dict into an epoch accumulator."""
+    for module_name, module_stats in grad_stats.items():
+        metric_accumulator = accumulator.setdefault(module_name, {})
+        for metric_name, value in module_stats.items():
+            metric_accumulator.setdefault(metric_name, []).append(value)
+
+
+def _mean_grad_monitor_stats(accumulator):
+    """Return per-module mean values from sampled gradient stats."""
+    return {
+        module_name: {
+            metric_name: float(np.mean(values))
+            for metric_name, values in module_stats.items()
+            if values
+        }
+        for module_name, module_stats in accumulator.items()
+    }
+
+
+def _write_grad_monitor_scalars(writer, grad_stats, step: int, suffix: str) -> None:
+    """Write gradient monitor scalars under train/grad/<module>/... tags."""
+    if writer is None:
+        return
+    for module_name, module_stats in grad_stats.items():
+        for metric_name, value in module_stats.items():
+            writer.add_scalar(
+                f"train/grad/{module_name}/{metric_name}_{suffix}",
+                value,
+                step,
+            )
+
+
+def _format_grad_monitor_log(grad_stats) -> str:
+    """Return a compact epoch-level gradient diagnostic for train.log."""
+    parts = []
+    for module_name, module_stats in grad_stats.items():
+        parts.append(
+            "{} pre={:.4g} post={:.4g} max_abs={:.4g}->{:.4g} ratio={:.4g}".format(
+                module_name,
+                module_stats["pre_clip_norm"],
+                module_stats["post_clip_norm"],
+                module_stats["pre_clip_max_abs"],
+                module_stats["post_clip_max_abs"],
+                module_stats["clip_ratio"],
+            )
+        )
+    return "; ".join(parts)
 
 
 def _normalize_grad_clip_mode(mode: str) -> str:
@@ -67,6 +192,16 @@ def _resolve_grad_clip_norm_type(norm_type):
             return float("inf")
         return float(norm_type)
     return float(norm_type)
+
+
+def _resolve_grad_monitor_norm_type(cfg):
+    """Return the norm type used for diagnostic gradient monitor stats."""
+    mode = str(getattr(cfg.training, "grad_clip_mode", "norm")).lower()
+    if mode in {"norm", "normclip"}:
+        return _resolve_grad_clip_norm_type(
+            getattr(cfg.training, "grad_clip_norm_type", 2.0)
+        )
+    return 2.0
 
 
 def _clip_gradients(model, decoder_params, cfg) -> None:
@@ -297,6 +432,8 @@ class TrainingSession:
         first_pos_mse_acc = []
         hd_mae_acc = []
         first_hd_mae_acc = []
+        grad_stats_acc = {}
+        grad_norm_type = _resolve_grad_monitor_norm_type(self.cfg)
         epoch_start = time.time()
 
         use_tqdm = getattr(self.cfg.training, "use_tqdm", True) and self.hooks.tqdm is not None
@@ -374,8 +511,19 @@ class TrainingSession:
                 for ens, logits, targets in zip(hdc_ens, hdc_logits, hdc_targets)
             )
 
+            should_log_step = ((step + 1) % step_log_interval == 0) or (step == num_steps - 1)
             loss.backward()
+            grad_stats = {}
+            if should_log_step:
+                pre_clip_grad_stats = _collect_grad_monitor_stats(model, grad_norm_type)
             _clip_gradients(model, decoder_params, self.cfg)
+            if should_log_step:
+                post_clip_grad_stats = _collect_grad_monitor_stats(model, grad_norm_type)
+                grad_stats = _merge_grad_monitor_stats(
+                    pre_clip_grad_stats,
+                    post_clip_grad_stats,
+                )
+                _accumulate_grad_monitor_stats(grad_stats_acc, grad_stats)
             optimizer.step()
 
             loss_value = loss.item()
@@ -400,13 +548,13 @@ class TrainingSession:
                     first_hd=f"{first_hd_mae_value:.4f}",
                 )
 
-            should_log_step = ((step + 1) % step_log_interval == 0) or (step == num_steps - 1)
             if writer is not None and should_log_step:
                 writer.add_scalar("train/loss_step", loss_value, global_step)
                 writer.add_scalar("train/pos_mse_step", pos_mse_value, global_step)
                 writer.add_scalar("train/first_pos_mse_step", first_pos_mse_value, global_step)
                 writer.add_scalar("train/hd_mae_rad_step", hd_mae_value, global_step)
                 writer.add_scalar("train/first_hd_mae_rad_step", first_hd_mae_value, global_step)
+                _write_grad_monitor_scalars(writer, grad_stats, global_step, "step")
 
         epoch_mean = float(np.mean(loss_acc))
         epoch_std = float(np.std(loss_acc))
@@ -418,6 +566,7 @@ class TrainingSession:
         epoch_first_hd_ratio = _metric_ratio(epoch_first_hd_mae, epoch_hd_mae)
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
+        epoch_grad_stats = _mean_grad_monitor_stats(grad_stats_acc)
 
         logger.info(
             "epoch=%4d  loss mean=%.4f  std=%.4f  pos_mse=%.6f  "
@@ -436,6 +585,12 @@ class TrainingSession:
             current_lr,
             epoch_time,
         )
+        if epoch_grad_stats:
+            logger.info(
+                "epoch=%4d  grad sampled_means %s",
+                epoch,
+                _format_grad_monitor_log(epoch_grad_stats),
+            )
 
         if writer is not None:
             writer.add_scalar("train/loss_mean", epoch_mean, epoch)
@@ -453,6 +608,7 @@ class TrainingSession:
             )
             writer.add_scalar("train/lr", current_lr, epoch)
             writer.add_scalar("train/epoch_seconds", epoch_time, epoch)
+            _write_grad_monitor_scalars(writer, epoch_grad_stats, epoch, "mean")
 
         if lr_scheduler is not None:
             lr_scheduler.step()

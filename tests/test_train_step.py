@@ -37,7 +37,10 @@ from train import (
 from grid_cells.training.session import (
     TrainingSession,
     TrainingSessionHooks,
+    _collect_grad_group_stats,
     _clip_gradients,
+    _merge_grad_monitor_stats,
+    _resolve_grad_monitor_norm_type,
 )
 from grid_cells.training.cli import parse_train_args
 from grid_cells.training.runtime import save_checkpoint
@@ -262,6 +265,169 @@ def test_run_epoch_logs_first_step_metrics():
     ):
         assert tag in writer.scalars
         assert np.isfinite(writer.scalars[tag][0][0])
+
+
+def test_grad_monitor_stats_compute_norms_and_clip_ratio():
+    """Gradient monitor helpers should report finite group stats without mutation."""
+    param = torch.nn.Parameter(torch.zeros(2))
+    skipped = torch.nn.Parameter(torch.zeros(2))
+    param.grad = torch.tensor([3.0, 4.0])
+
+    stats = _collect_grad_group_stats([param, skipped], norm_type=2.0)
+    inf_stats = _collect_grad_group_stats([param], norm_type=float("inf"))
+    merged = _merge_grad_monitor_stats(
+        {"state_init": stats},
+        {"state_init": {"norm": 2.5, "max_abs": 2.0}},
+    )
+
+    assert stats == {"norm": 5.0, "max_abs": 4.0}
+    assert inf_stats == {"norm": 4.0, "max_abs": 4.0}
+    assert merged["state_init"]["pre_clip_norm"] == 5.0
+    assert merged["state_init"]["post_clip_norm"] == 2.5
+    assert merged["state_init"]["pre_clip_max_abs"] == 4.0
+    assert merged["state_init"]["post_clip_max_abs"] == 2.0
+    assert merged["state_init"]["clip_ratio"] == 0.5
+    assert param.grad.tolist() == [3.0, 4.0]
+
+
+def test_grad_monitor_norm_type_uses_clip_norm_type_for_norm_mode():
+    cfg = make_cfg()
+    cfg.training.grad_clip_mode = "norm"
+    cfg.training.grad_clip_norm_type = "inf"
+
+    assert _resolve_grad_monitor_norm_type(cfg) == float("inf")
+
+
+@pytest.mark.parametrize(
+    ("mode", "norm_type"),
+    [
+        ("value", None),
+        ("valueclip", "unused"),
+        ("median", "unused"),
+    ],
+)
+def test_grad_monitor_norm_type_uses_l2_for_non_norm_modes(mode, norm_type):
+    cfg = make_cfg()
+    cfg.training.grad_clip_mode = mode
+    cfg.training.grad_clip_norm_type = norm_type
+
+    assert _resolve_grad_monitor_norm_type(cfg) == 2.0
+
+
+def test_run_epoch_logs_per_module_grad_monitor_scalars():
+    """Training should emit sampled per-module gradient diagnostics."""
+    cfg = make_cfg()
+    cfg.task.seq_len = 2
+    cfg.model.dropout_rate = 0.0
+    cfg.training.eval_every = 99
+    cfg.training.tensorboard_log_every = 1
+    cfg.training.use_tqdm = False
+    cfg.training.grad_clip = 1e-6
+    cfg.training.grad_clip_mode = "value"
+    cfg.training.grad_clip_scope = "all"
+    cfg.training.grad_clip_norm_type = "unused"
+    device = torch.device("cpu")
+
+    pc_ens = [PlaceCellEnsemble(4, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    encoder = EnsembleEncoder(pc_ens, hdc_ens)
+
+    init_pos = torch.zeros(2, 2)
+    init_hd = torch.zeros(2, 1)
+    ego_vel = torch.zeros(2, cfg.task.seq_len, 3)
+    target_pos = torch.zeros(2, cfg.task.seq_len, 2)
+    target_hd = torch.zeros(2, cfg.task.seq_len, 1)
+    encoded_targets = encoder.encode_targets(target_pos, target_hd)
+
+    batch = {
+        "init_cond": torch.from_numpy(encoder.encode_initial_conditions(init_pos, init_hd)),
+        "ego_vel": ego_vel,
+        "target_pos": target_pos,
+        "target_hd": target_hd,
+        "pc_targets_0": torch.from_numpy(encoded_targets.pc_targets[0]),
+        "hdc_targets_0": torch.from_numpy(encoded_targets.hdc_targets[0]),
+    }
+
+    class DummyWriter:
+        def __init__(self):
+            self.scalars = {}
+
+        def add_scalar(self, tag, value, step):
+            self.scalars.setdefault(tag, []).append((value, step))
+
+    class DummyLogger:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message, *args):
+            self.messages.append(message % args if args else message)
+
+    hooks = SimpleNamespace(
+        tqdm=None,
+        get_step_log_interval=lambda num_steps: 1,
+        evaluate=lambda *args, **kwargs: None,
+    )
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model)).to(device)
+    optimizer, decoder_params = build_optimizer(model, cfg)
+    writer = DummyWriter()
+    logger = DummyLogger()
+
+    TrainingSession(cfg, hooks=hooks)._run_epoch(
+        epoch=0,
+        global_step=0,
+        logger=logger,
+        writer=writer,
+        device=device,
+        model=model,
+        optimizer=optimizer,
+        lr_scheduler=None,
+        decoder_params=decoder_params,
+        pc_ens=pc_ens,
+        hdc_ens=hdc_ens,
+        scorer=None,
+        fixed_loader=[batch],
+        fixed_eval_loader=None,
+    )
+
+    expected_modules = {
+        "state_init",
+        "cell_init",
+        "lstm",
+        "bottleneck",
+        "pc_heads",
+        "hdc_heads",
+    }
+    expected_metrics = {
+        "pre_clip_norm",
+        "post_clip_norm",
+        "pre_clip_max_abs",
+        "post_clip_max_abs",
+        "clip_ratio",
+    }
+    clipped_modules = []
+    for module_name in expected_modules:
+        pre_norm_tag = f"train/grad/{module_name}/pre_clip_norm_step"
+        post_norm_tag = f"train/grad/{module_name}/post_clip_norm_step"
+        pre_max_abs_tag = f"train/grad/{module_name}/pre_clip_max_abs_step"
+        post_max_abs_tag = f"train/grad/{module_name}/post_clip_max_abs_step"
+        ratio_tag = f"train/grad/{module_name}/clip_ratio_step"
+
+        for metric_name in expected_metrics:
+            step_tag = f"train/grad/{module_name}/{metric_name}_step"
+            mean_tag = f"train/grad/{module_name}/{metric_name}_mean"
+            assert step_tag in writer.scalars
+            assert mean_tag in writer.scalars
+            assert np.isfinite(writer.scalars[step_tag][0][0])
+            assert np.isfinite(writer.scalars[mean_tag][0][0])
+
+        assert writer.scalars[post_norm_tag][0][0] <= writer.scalars[pre_norm_tag][0][0]
+        if writer.scalars[pre_max_abs_tag][0][0] > cfg.training.grad_clip:
+            clipped_modules.append(module_name)
+        assert writer.scalars[post_max_abs_tag][0][0] <= cfg.training.grad_clip + 1e-12
+        assert 0.0 <= writer.scalars[ratio_tag][0][0] <= 1.0
+
+    assert clipped_modules
+    assert any("grad sampled_means" in message for message in logger.messages)
 
 
 def test_resolve_save_dir_appends_timestamp_directory():

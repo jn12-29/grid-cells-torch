@@ -25,7 +25,7 @@ README-safe assets are mirrored under `docs/assets/readme/`.
 ## 🚀 Beyond The Official Repo
 
 - Pre-generated `train/eval` datasets, with on-the-fly fallback.
-- Compact `train.log` and TensorBoard logging.
+- Compact `train.log` and TensorBoard logging, including per-module gradient diagnostics.
 - Decoded-position and head-direction metrics for training and evaluation, including whole-sequence `pos_mse` / `hd_mae_rad` and first-step `first_pos_mse` / `first_hd_mae_rad` diagnostics.
 - Paginated rate-map PDFs, HDC tuning PDFs, and shared 3-panel MP4s for eval and generated data.
 - Optional bottleneck-unit statistical analysis with circular-shift grid-score significance, split-half reliability, and head-direction selectivity.
@@ -121,7 +121,7 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 
 - `train.log`: compact training log.
 - `config.yaml`: effective training config after CLI overrides, including the resolved run directory.
-- `tensorboard/`: scalar metrics and config snapshot, including first-step prediction diagnostics.
+- `tensorboard/`: scalar metrics and config snapshot, including first-step prediction diagnostics and sampled per-module gradient norms, max-absolute gradients, and clip ratios.
 - `checkpoints/checkpoint_epoch_XXXX.pt`: periodic save-only checkpoint after configured completed epochs.
 - `checkpoints/checkpoint_final.pt`: final save-only checkpoint after normal training completion.
 - `eval_plots/rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
@@ -156,7 +156,7 @@ grid-cells-torch/
 - Checkpoints are save-only analysis artifacts; training resume is not implemented yet.
 - Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, `adam`, and `sgd`; `training.momentum` applies to RMSprop and SGD.
 - Learning-rate scheduling defaults to `training.lr_scheduler: "cosine"`; use `--training.lr_scheduler none` to disable it or `--training.lr_scheduler step` for StepLR.
-- Gradient clipping uses `training.grad_clip` as the threshold and defaults to `training.grad_clip_mode: "norm"` on the `decoder` scope. `training.grad_clip_mode` supports `value` elementwise clipping and `norm` proportional rescaling; `training.grad_clip_scope` supports `decoder` and `all`; `training.grad_clip_norm_type: "inf"` uses the largest absolute gradient value for norm clipping.
+- Gradient clipping uses `training.grad_clip` as the threshold and defaults to `training.grad_clip_mode: "norm"` on the `decoder` scope. `training.grad_clip_mode` supports `value` elementwise clipping and `norm` proportional rescaling; `training.grad_clip_scope` supports `decoder` and `all`; `training.grad_clip_norm_type: "inf"` uses the largest absolute gradient value for norm clipping. Training logs sampled per-module gradient diagnostics for `state_init`, `cell_init`, `lstm`, `bottleneck`, `pc_heads`, and `hdc_heads`; TensorBoard receives step and epoch-mean scalars under `train/grad/<module>/...`, and `train.log` receives compact epoch sampled means.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
 - `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz`, `<datadir>/eval.npz`, and `<datadir>/cells.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.

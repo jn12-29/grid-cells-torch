@@ -63,6 +63,6 @@ CUDA_VISIBLE_DEVICES=0 python train.py --training.grad_clip_mode norm --training
 
 Monitor
 
-18. Inspect metrics in TensorBoard
+18. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
 tensorboard --logdir results
 EOF
