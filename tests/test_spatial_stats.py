@@ -12,6 +12,10 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from grid_cells.analysis.scores import GridScorer
+from grid_cells.analysis.linear_spatial_pca import (
+    analyze_linear_spatial_pca_gridness,
+    save_linear_spatial_pca_artifacts,
+)
 from grid_cells.analysis.spatial_stats import (
     STAT_FIELDS,
     analyze_bottleneck_spatial_stats,
@@ -406,3 +410,145 @@ def test_save_spatial_stats_artifacts_writes_contract_files(tmp_path):
     with np.load(paths["npz"]) as payload:
         assert "grid_fdr_scale_discreteness_null" in payload
         assert "grid_threshold_scale_discreteness_null" in payload
+
+
+def test_linear_spatial_pca_returns_orthogonal_held_out_modes():
+    """Spatial-PCA baseline should fit orthogonal modes and split trajectories."""
+    rng = np.random.default_rng(9)
+    scorer = make_scorer(nbins=6)
+    positions = rng.uniform(-0.9, 0.9, size=(6, 10, 2))
+    activations = rng.normal(size=(6, 10, 4))
+
+    result = analyze_linear_spatial_pca_gridness(
+        scorer,
+        positions,
+        activations,
+        top_k=3,
+        fit_fraction=0.5,
+        num_shuffles=2,
+        random_seed=5,
+    )
+
+    W_top = result["W_top"]
+    assert W_top.shape == (4, 3)
+    assert np.allclose(W_top.T @ W_top, np.eye(3), atol=1e-10)
+    assert set(result["fit_indices"]).isdisjoint(set(result["test_indices"]))
+    assert len(result["rows"]) == 3
+    assert result["arrays"]["grid_score_60_test"].shape == (3,)
+    assert result["arrays"]["grid_score_60_fit"].shape == (3,)
+    assert result["arrays"]["grid_score_90_fit"].shape == (3,)
+    assert result["arrays"]["loading_participation_ratio"].shape == (3,)
+    assert np.all(np.isfinite(result["arrays"]["loading_participation_ratio"]))
+    assert np.all(result["arrays"]["loading_participation_ratio"] >= 1.0)
+    assert np.all(result["arrays"]["loading_participation_ratio"] <= 4.0)
+    assert result["fit_ratemaps"].shape == (3, 6, 6)
+    assert result["test_ratemaps"].shape == (3, 6, 6)
+    assert result["test_sacs"].shape == (3, 11, 11)
+    ordered = result["mode_order_by_test_grid_score"]
+    assert ordered.shape == (3,)
+    ordered_scores = result["arrays"]["grid_score_60_test"][ordered]
+    finite_scores = np.where(np.isfinite(ordered_scores), ordered_scores, -np.inf)
+    assert np.all(np.diff(finite_scores) <= 0)
+    assert result["null_T"].shape == (2,)
+    assert result["null_top_scores"].shape == (2, 3)
+    assert result["summary"]["version"] == "v1_spatial_pca_baseline"
+    assert result["summary"]["not_grid_score_optimized"] is True
+
+
+def test_linear_spatial_pca_shuffle_refits_directions(monkeypatch):
+    """Each null sample should refit W instead of reusing the real fit."""
+    from grid_cells.analysis import linear_spatial_pca as module
+
+    rng = np.random.default_rng(10)
+    scorer = make_scorer(nbins=5)
+    positions = rng.uniform(-0.9, 0.9, size=(4, 8, 2))
+    activations = rng.normal(size=(4, 8, 3))
+    original_fit = module._fit_spatial_pca_directions
+    call_count = {"n": 0}
+
+    def counted_fit(*args, **kwargs):
+        call_count["n"] += 1
+        return original_fit(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_fit_spatial_pca_directions", counted_fit)
+
+    analyze_linear_spatial_pca_gridness(
+        scorer,
+        positions,
+        activations,
+        top_k=2,
+        num_shuffles=3,
+        random_seed=2,
+    )
+
+    assert call_count["n"] == 4
+
+
+def test_save_linear_spatial_pca_artifacts_writes_contract_files(tmp_path):
+    """Linear spatial-PCA output should use independent artifact names."""
+    rng = np.random.default_rng(11)
+    scorer = make_scorer(nbins=5)
+    positions = rng.uniform(-0.9, 0.9, size=(4, 8, 2))
+    activations = rng.normal(size=(4, 8, 3))
+    result = analyze_linear_spatial_pca_gridness(
+        scorer,
+        positions,
+        activations,
+        top_k=2,
+        num_shuffles=1,
+        random_seed=4,
+    )
+
+    paths = save_linear_spatial_pca_artifacts(result, str(tmp_path), epoch=7)
+
+    assert os.path.basename(paths["csv"]) == "linear_spatial_pca_modes_epoch_0007.csv"
+    assert os.path.basename(paths["npz"]) == "linear_spatial_pca_modes_epoch_0007.npz"
+    assert os.path.basename(paths["summary_json"]) == (
+        "linear_spatial_pca_summary_epoch_0007.json"
+    )
+    assert os.path.basename(paths["overview_pdf"]) == (
+        "linear_spatial_pca_overview_epoch_0007.pdf"
+    )
+    assert os.path.basename(paths["overview_png"]) == (
+        "linear_spatial_pca_overview_epoch_0007.png"
+    )
+    assert os.path.basename(paths["mode_maps_pdf"]) == (
+        "linear_spatial_pca_mode_maps_epoch_0007.pdf"
+    )
+    for path in paths.values():
+        assert os.path.exists(path)
+    with np.load(paths["npz"]) as payload:
+        assert "W_top" in payload
+        assert "fit_indices" in payload
+        assert "test_indices" in payload
+        assert "null_T" in payload
+        assert "fit_ratemaps" in payload
+        assert "test_ratemaps" in payload
+        assert "test_sacs" in payload
+
+
+def test_save_linear_spatial_pca_artifacts_can_skip_plots(tmp_path):
+    """Plot exports should be optional without changing data artifacts."""
+    rng = np.random.default_rng(12)
+    scorer = make_scorer(nbins=5)
+    positions = rng.uniform(-0.9, 0.9, size=(4, 8, 2))
+    activations = rng.normal(size=(4, 8, 3))
+    result = analyze_linear_spatial_pca_gridness(
+        scorer,
+        positions,
+        activations,
+        top_k=2,
+        num_shuffles=0,
+        random_seed=4,
+    )
+
+    paths = save_linear_spatial_pca_artifacts(
+        result,
+        str(tmp_path),
+        epoch=8,
+        save_plots=False,
+    )
+
+    assert set(paths) == {"csv", "npz", "summary_json"}
+    assert not list(tmp_path.glob("linear_spatial_pca_overview_epoch_0008.*"))
+    assert not list(tmp_path.glob("linear_spatial_pca_mode_maps_epoch_0008.*"))

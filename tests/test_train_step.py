@@ -5,6 +5,8 @@ Usage:
     pytest tests/test_train_step.py -k save_dir
 """
 import argparse
+import copy
+import json
 import logging
 import os
 import numpy as np
@@ -16,11 +18,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from datetime import datetime
 from types import SimpleNamespace
 
+import analyze_checkpoint as analyze_checkpoint_module
 import train as train_module
 from grid_cells.data.dataset import get_dataloader
 from grid_cells.cells.encoding import EnsembleEncoder
 from grid_cells.cells.ensembles import PlaceCellEnsemble, HeadDirectionCellEnsemble
 from grid_cells.cells.model import GridCellsRNN
+from grid_cells.analysis.linear_spatial_pca import LINEAR_SPATIAL_PCA_FIELDS
 from train import (
     _evaluate,
     _apply_cli_path_overrides,
@@ -114,7 +118,13 @@ def make_cfg():
             compute_shuffle_significance=True,
             compute_split_half=True,
             compute_hd_selectivity=True,
+            compute_linear_spatial_pca=False,
             num_shuffles=200,
+            linear_spatial_pca_top_k=16,
+            linear_spatial_pca_fit_fraction=0.5,
+            linear_spatial_pca_num_shuffles=0,
+            linear_spatial_pca_save_plots=True,
+            linear_spatial_pca_plot_top_n=16,
             scale_discreteness_num_shuffles=500,
             scale_discreteness_bins=13,
             scale_discreteness_min_bins=10.0,
@@ -857,6 +867,239 @@ def test_save_checkpoint_writes_cpu_payload_under_checkpoints(tmp_path):
     assert all(tensor.device.type == "cpu" for tensor in optimizer_tensors)
 
 
+def _save_small_grid_checkpoint(tmp_path):
+    """Save a small real GridCellsRNN checkpoint for post-hoc analysis tests."""
+    cfg = make_cfg()
+    cfg.task.n_pc = [3]
+    cfg.task.pc_scale = [0.35]
+    cfg.task.n_hdc = [2]
+    cfg.task.seq_len = 3
+    cfg.model.nh_lstm = 4
+    cfg.model.nh_bottleneck = 5
+    cfg.training.save_dir = str(tmp_path / "run")
+    cfg.training.eval_num_samples = 2
+    cfg.training.eval_loader_batch_size = 2
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_units_per_page = 2
+    cfg.training.eval_pdf_dpi = 50
+    cfg.training.eval_plot_every = 0
+    cfg.training.num_workers = 0
+
+    pc_ens = [PlaceCellEnsemble(3, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(2, concentration=20.0, seed=0)]
+    pc_centers = np.array(
+        [[-0.5, -0.25], [0.0, 0.25], [0.5, 0.75]],
+        dtype=np.float32,
+    )
+    hdc_centers = np.array([0.25, 1.25], dtype=np.float32)
+    pc_ens[0].means = pc_centers.copy()
+    hdc_ens[0].means = hdc_centers.copy()
+
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    path = save_checkpoint(
+        model,
+        optimizer,
+        None,
+        cfg,
+        pc_ens,
+        hdc_ens,
+        epoch=7,
+        global_step=11,
+        filename="checkpoint_epoch_0007.pt",
+    )
+    return path, pc_centers, hdc_centers
+
+
+def test_analyze_checkpoint_parse_args_allows_only_posthoc_overrides():
+    """Checkpoint analysis CLI should expose only post-hoc-safe overrides."""
+    args = analyze_checkpoint_module.parse_args(
+        [
+            "--checkpoint",
+            "results/run/checkpoints/checkpoint_epoch_0007.pt",
+            "--analysis.compute_linear_spatial_pca",
+            "true",
+            "--training.eval_num_workers",
+            "0",
+            "--visualization.anim_step",
+            "2",
+        ]
+    )
+
+    assert args.checkpoint.endswith("checkpoint_epoch_0007.pt")
+    assert args.analysis__compute_linear_spatial_pca is True
+    assert args.training__eval_num_workers == 0
+    assert args.visualization__anim_step == 2
+
+    with pytest.raises(SystemExit):
+        analyze_checkpoint_module.parse_args(
+            [
+                "--checkpoint",
+                "checkpoint.pt",
+                "--model.nh_lstm",
+                "64",
+            ]
+        )
+
+
+def test_analyze_checkpoint_default_output_dir_uses_ckpt_analysis_folder():
+    """Default post-hoc output should not overwrite training eval artifacts."""
+    path = "results/run/checkpoints/checkpoint_epoch_0007.pt"
+
+    assert analyze_checkpoint_module.default_output_dir(path) == os.path.join(
+        "results",
+        "run",
+        "ckpt_analysis",
+        "checkpoint_epoch_0007",
+    )
+
+
+def test_analyze_checkpoint_rebuilds_from_payload_and_runs_eval(monkeypatch, tmp_path):
+    """Post-hoc analysis should load ckpt config, weights, centers, and epoch."""
+    checkpoint_path, pc_centers, hdc_centers = _save_small_grid_checkpoint(tmp_path)
+    output_dir = tmp_path / "posthoc"
+    eval_path = tmp_path / "eval_override.npz"
+    captured = {}
+
+    def fake_build_eval_loader(cfg, logger, eval_data_path=None):
+        captured["loader_eval_data_path"] = eval_data_path
+        return "eval-loader"
+
+    def fake_evaluate(model, pc_ens, hdc_ens, scorer, eval_loader, cfg, device, epoch, writer=None):
+        captured["model"] = model
+        captured["pc_centers"] = pc_ens[0].means.copy()
+        captured["hdc_centers"] = hdc_ens[0].means.copy()
+        captured["eval_loader"] = eval_loader
+        captured["save_dir"] = cfg.training.save_dir
+        captured["analysis_enabled"] = cfg.analysis.enabled
+        captured["linear_spatial_pca"] = cfg.analysis.compute_linear_spatial_pca
+        captured["eval_plot_every"] = cfg.training.eval_plot_every
+        captured["anim_step"] = cfg.visualization.anim_step
+        captured["epoch"] = epoch
+        captured["writer"] = writer
+
+    monkeypatch.setattr(analyze_checkpoint_module, "_build_eval_loader", fake_build_eval_loader)
+    monkeypatch.setattr(analyze_checkpoint_module, "_evaluate", fake_evaluate)
+
+    args = analyze_checkpoint_module.parse_args(
+        [
+            "--checkpoint",
+            checkpoint_path,
+            "--output_dir",
+            str(output_dir),
+            "--eval_data_path",
+            str(eval_path),
+            "--analysis.compute_linear_spatial_pca",
+            "true",
+            "--visualization.anim_step",
+            "3",
+        ]
+    )
+
+    returned_dir = analyze_checkpoint_module.analyze_checkpoint(
+        args.checkpoint,
+        args.output_dir,
+        args.eval_data_path,
+        args=args,
+    )
+
+    assert returned_dir == str(output_dir)
+    assert captured["loader_eval_data_path"] == str(eval_path)
+    assert captured["eval_loader"] == "eval-loader"
+    assert captured["save_dir"] == str(output_dir)
+    assert captured["analysis_enabled"] is True
+    assert captured["linear_spatial_pca"] is True
+    assert captured["eval_plot_every"] == 1
+    assert captured["anim_step"] == 3
+    assert captured["epoch"] == 7
+    assert captured["writer"] is None
+    assert np.array_equal(captured["pc_centers"], pc_centers)
+    assert np.array_equal(captured["hdc_centers"], hdc_centers)
+    loaded_cfg = load_config(str(output_dir / "config.yaml"))
+    assert loaded_cfg.training.save_dir == str(output_dir)
+    assert loaded_cfg.training.eval_data_path == str(eval_path)
+
+
+def test_analyze_checkpoint_programmatic_args_ignore_unsafe_overrides(tmp_path):
+    """Programmatic calls should obey the same safe override allow-list as CLI."""
+    checkpoint_path, _, _ = _save_small_grid_checkpoint(tmp_path)
+    payload = analyze_checkpoint_module.load_checkpoint_payload(checkpoint_path)
+    args = SimpleNamespace(
+        checkpoint=checkpoint_path,
+        output_dir=str(tmp_path / "posthoc"),
+        eval_data_path=None,
+        model__nh_lstm=99,
+        task__env_size=9.9,
+        analysis__compute_linear_spatial_pca=True,
+    )
+
+    cfg = analyze_checkpoint_module.build_analysis_config(payload, args)
+
+    assert cfg.model.nh_lstm == payload["config"]["model"]["nh_lstm"]
+    assert cfg.task.env_size == payload["config"]["task"]["env_size"]
+    assert cfg.analysis.compute_linear_spatial_pca is True
+
+
+def test_analyze_checkpoint_backfills_old_posthoc_config_fields(tmp_path):
+    """Old schema-v1 checkpoints should accept newer safe post-hoc overrides."""
+    checkpoint_path, _, _ = _save_small_grid_checkpoint(tmp_path)
+    payload = analyze_checkpoint_module.load_checkpoint_payload(checkpoint_path)
+    old_payload = copy.deepcopy(payload)
+    old_analysis = old_payload["config"]["analysis"]
+    missing_analysis_fields = (
+        "compute_linear_spatial_pca",
+        "linear_spatial_pca_top_k",
+        "linear_spatial_pca_fit_fraction",
+        "linear_spatial_pca_num_shuffles",
+        "linear_spatial_pca_save_plots",
+        "linear_spatial_pca_plot_top_n",
+    )
+    for field in missing_analysis_fields:
+        old_analysis.pop(field)
+    old_payload["config"]["training"].pop("eval_num_workers")
+    old_payload["config"]["visualization"].pop("anim_step")
+
+    args = SimpleNamespace(
+        checkpoint=checkpoint_path,
+        output_dir=str(tmp_path / "posthoc"),
+        eval_data_path=None,
+        model__nh_lstm=99,
+        task__env_size=9.9,
+        analysis__compute_linear_spatial_pca=True,
+        analysis__linear_spatial_pca_top_k=7,
+        analysis__linear_spatial_pca_save_plots=False,
+        training__eval_num_workers=0,
+        visualization__anim_step=3,
+    )
+
+    cfg = analyze_checkpoint_module.build_analysis_config(old_payload, args)
+
+    assert cfg.analysis.compute_linear_spatial_pca is True
+    assert cfg.analysis.linear_spatial_pca_top_k == 7
+    assert cfg.analysis.linear_spatial_pca_fit_fraction == 0.5
+    assert cfg.analysis.linear_spatial_pca_num_shuffles == 0
+    assert cfg.analysis.linear_spatial_pca_save_plots is False
+    assert cfg.analysis.linear_spatial_pca_plot_top_n == 16
+    assert cfg.training.eval_num_workers == 0
+    assert cfg.visualization.anim_step == 3
+    assert cfg.model.nh_lstm == payload["config"]["model"]["nh_lstm"]
+    assert cfg.task.env_size == payload["config"]["task"]["env_size"]
+    for field in missing_analysis_fields:
+        assert field not in old_payload["config"]["analysis"]
+    assert "eval_num_workers" not in old_payload["config"]["training"]
+    assert "anim_step" not in old_payload["config"]["visualization"]
+
+
+def test_analyze_checkpoint_rejects_invalid_payload(tmp_path):
+    """Checkpoint analysis should fail clearly for unsupported payloads."""
+    path = tmp_path / "bad.pt"
+    torch.save({"schema_version": 2}, path)
+
+    with pytest.raises(ValueError, match="Unsupported checkpoint schema_version"):
+        analyze_checkpoint_module.load_checkpoint_payload(str(path))
+
+
 def _run_stubbed_training_session(
     cfg,
     tmp_path,
@@ -1117,8 +1360,20 @@ def test_register_config_overrides_supports_shared_sections():
             "false",
             "--analysis.compute_split_half",
             "false",
+            "--analysis.compute_linear_spatial_pca",
+            "true",
             "--analysis.num_shuffles",
             "10",
+            "--analysis.linear_spatial_pca_top_k",
+            "8",
+            "--analysis.linear_spatial_pca_fit_fraction",
+            "0.6",
+            "--analysis.linear_spatial_pca_num_shuffles",
+            "3",
+            "--analysis.linear_spatial_pca_save_plots",
+            "false",
+            "--analysis.linear_spatial_pca_plot_top_n",
+            "6",
             "--analysis.scale_discreteness_num_shuffles",
             "25",
             "--analysis.scale_gmm_max_components",
@@ -1152,7 +1407,13 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.analysis__compute_grid_geometry is False
     assert args.analysis__compute_shuffle_significance is False
     assert args.analysis__compute_split_half is False
+    assert args.analysis__compute_linear_spatial_pca is True
     assert args.analysis__num_shuffles == 10
+    assert args.analysis__linear_spatial_pca_top_k == 8
+    assert args.analysis__linear_spatial_pca_fit_fraction == 0.6
+    assert args.analysis__linear_spatial_pca_num_shuffles == 3
+    assert args.analysis__linear_spatial_pca_save_plots is False
+    assert args.analysis__linear_spatial_pca_plot_top_n == 6
     assert args.analysis__scale_discreteness_num_shuffles == 25
     assert args.analysis__scale_gmm_max_components == 4
     assert args.analysis__gridness_threshold == 0.25
@@ -1204,6 +1465,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "false",
             "--analysis.compute_hd_selectivity",
             "false",
+            "--analysis.compute_linear_spatial_pca",
+            "true",
             "--analysis.max_eval_trajectories",
             "16",
         ],
@@ -1229,6 +1492,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.visualization__anim_step == 2
     assert args.analysis__enabled is False
     assert args.analysis__compute_hd_selectivity is False
+    assert args.analysis__compute_linear_spatial_pca is True
     assert args.analysis__max_eval_trajectories == 16
 
 
@@ -1724,6 +1988,7 @@ def test_evaluate_analysis_disabled_does_not_write_grid_stats(monkeypatch, tmp_p
     )
 
     assert not list((tmp_path / "eval_stats").glob("grid_stats_epoch_0002*"))
+    assert not list((tmp_path / "eval_stats").glob("linear_spatial_pca_*_0002*"))
 
 
 def test_evaluate_analysis_enabled_writes_grid_stats(monkeypatch, tmp_path):
@@ -1804,6 +2069,203 @@ def test_evaluate_analysis_enabled_writes_grid_stats(monkeypatch, tmp_path):
     assert (stats_dir / "grid_stats_summary_epoch_0003.json").exists()
     assert (stats_dir / "grid_scale_histograms_epoch_0003.pdf").exists()
     assert (stats_dir / "grid_scale_histograms_epoch_0003.png").exists()
+    assert not list(stats_dir.glob("linear_spatial_pca_*_0003*"))
+
+
+def test_evaluate_linear_spatial_pca_enabled_writes_independent_artifacts(
+    monkeypatch,
+    tmp_path,
+):
+    """Linear spatial-PCA analysis should use its own artifact contract."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_plot_every = 0
+    cfg.analysis.enabled = True
+    cfg.analysis.compute_linear_spatial_pca = True
+    cfg.analysis.linear_spatial_pca_top_k = 2
+    cfg.analysis.linear_spatial_pca_fit_fraction = 0.5
+    cfg.analysis.linear_spatial_pca_num_shuffles = 1
+    cfg.analysis.max_eval_trajectories = 2
+    captured = {}
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    def fake_linear_analyze(scorer, positions, activations, **kwargs):
+        captured["positions_shape"] = positions.shape
+        captured["activations_shape"] = activations.shape
+        captured.update(kwargs)
+        arrays = {
+            "mode_id": np.array([0, 1]),
+            "selected_rank": np.array([1, 2]),
+            "fit_variance_explained": np.array([0.7, 0.2]),
+            "fit_cumulative_variance_explained": np.array([0.7, 0.9]),
+            "grid_score_60_fit": np.array([0.4, 0.1]),
+            "grid_score_90_fit": np.array([0.2, 0.05]),
+            "grid_score_60_test": np.array([0.5, 0.2]),
+            "grid_score_90_test": np.array([0.3, 0.1]),
+            "grid_scale_bins": np.array([4.0, np.nan]),
+            "grid_scale_m": np.array([0.4, np.nan]),
+            "grid_scale_valid": np.array([True, False]),
+            "loading_participation_ratio": np.array([3.0, 4.0]),
+            "mode_order_by_test_grid_score": np.array([0, 1]),
+        }
+        rows = [
+            {field: arrays[field][mode_index].item() for field in LINEAR_SPATIAL_PCA_FIELDS}
+            for mode_index in range(2)
+        ]
+        return {
+            "fields": LINEAR_SPATIAL_PCA_FIELDS,
+            "rows": rows,
+            "arrays": arrays,
+            "summary": {
+                "version": "v1_spatial_pca_baseline",
+                "T_real": 0.5,
+                "p_value": 1.0,
+                "top_k": 2,
+            },
+            "W_top": np.zeros((cfg.model.nh_bottleneck, 2)),
+            "fit_center": np.zeros(cfg.model.nh_bottleneck),
+            "fit_indices": np.array([0]),
+            "test_indices": np.array([1]),
+            "null_T": np.array([0.25]),
+            "null_top_scores": np.array([[0.25, 0.1]]),
+            "fit_ratemaps": np.zeros((2, 2, 2)),
+            "test_ratemaps": np.zeros((2, 2, 2)),
+            "test_sacs": np.zeros((2, 3, 3)),
+            "mode_order_by_test_grid_score": np.array([0, 1]),
+        }
+
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.analyze_bottleneck_spatial_stats",
+        lambda *args, **kwargs: _minimal_analysis_result(),
+    )
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.analyze_linear_spatial_pca_gridness",
+        fake_linear_analyze,
+    )
+    monkeypatch.setattr(
+        train_module,
+        "score_ratemaps",
+        lambda *args, **kwargs: (
+            np.zeros(cfg.model.nh_bottleneck),
+            np.zeros(cfg.model.nh_bottleneck),
+            None,
+            None,
+            None,
+        ),
+    )
+
+    batch = _single_eval_batch()
+    batch["ego_vel"] = torch.zeros(2, 3, 3)
+    batch["target_pos"] = torch.zeros(2, 3, 2)
+    batch["target_hd"] = torch.zeros(2, 3, 1)
+
+    _evaluate(
+        _AnalysisDummyModel(cfg),
+        pc_ens,
+        hdc_ens,
+        _AnalysisDummyScorer(),
+        [batch],
+        cfg,
+        torch.device("cpu"),
+        epoch=5,
+    )
+
+    assert captured["positions_shape"] == (2, 3, 2)
+    assert captured["activations_shape"] == (2, 3, cfg.model.nh_bottleneck)
+    assert captured["top_k"] == 2
+    assert captured["fit_fraction"] == 0.5
+    assert captured["num_shuffles"] == 1
+    stats_dir = tmp_path / "eval_stats"
+    assert (stats_dir / "linear_spatial_pca_modes_epoch_0005.csv").exists()
+    assert (stats_dir / "linear_spatial_pca_modes_epoch_0005.npz").exists()
+    assert (stats_dir / "linear_spatial_pca_summary_epoch_0005.json").exists()
+    assert (stats_dir / "linear_spatial_pca_overview_epoch_0005.pdf").exists()
+    assert (stats_dir / "linear_spatial_pca_overview_epoch_0005.png").exists()
+    assert (stats_dir / "linear_spatial_pca_mode_maps_epoch_0005.pdf").exists()
+    with open(stats_dir / "linear_spatial_pca_modes_epoch_0005.csv") as handle:
+        header = handle.readline().strip().split(",")
+    assert header == LINEAR_SPATIAL_PCA_FIELDS
+    with np.load(stats_dir / "linear_spatial_pca_modes_epoch_0005.npz") as payload:
+        assert "grid_score_60_fit" in payload
+        assert "loading_participation_ratio" in payload
+        assert "mode_order_by_test_grid_score" in payload
+        assert payload["fit_ratemaps"].shape == (2, 2, 2)
+
+
+def test_evaluate_linear_spatial_pca_real_path_writes_summary(monkeypatch, tmp_path):
+    """Eval should run the real linear spatial-PCA analyzer on collected tensors."""
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_plot_every = 0
+    cfg.visualization.spatial_bins = 5
+    cfg.analysis.enabled = True
+    cfg.analysis.compute_linear_spatial_pca = True
+    cfg.analysis.linear_spatial_pca_top_k = 1
+    cfg.analysis.linear_spatial_pca_num_shuffles = 0
+    cfg.analysis.max_eval_trajectories = 2
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.analyze_bottleneck_spatial_stats",
+        lambda *args, **kwargs: _minimal_analysis_result(),
+    )
+    monkeypatch.setattr(
+        train_module,
+        "score_ratemaps",
+        lambda *args, **kwargs: (
+            np.zeros(cfg.model.nh_bottleneck),
+            np.zeros(cfg.model.nh_bottleneck),
+            None,
+            None,
+            None,
+        ),
+    )
+
+    batch = _single_eval_batch()
+    batch["ego_vel"] = torch.zeros(2, 5, 3)
+    batch["target_pos"] = torch.tensor(
+        [
+            [[-0.8, -0.8], [-0.4, -0.4], [0.0, 0.0], [0.4, 0.4], [0.8, 0.8]],
+            [[-0.8, 0.8], [-0.4, 0.4], [0.0, 0.0], [0.4, -0.4], [0.8, -0.8]],
+        ],
+        dtype=torch.float32,
+    )
+    batch["target_hd"] = torch.zeros(2, 5, 1)
+
+    _evaluate(
+        _AnalysisDummyModel(cfg),
+        pc_ens,
+        hdc_ens,
+        train_module.TrainingSession(cfg, hooks=None)._build_scorer(),
+        [batch],
+        cfg,
+        torch.device("cpu"),
+        epoch=6,
+    )
+
+    stats_dir = tmp_path / "eval_stats"
+    assert (stats_dir / "linear_spatial_pca_modes_epoch_0006.csv").exists()
+    summary_path = stats_dir / "linear_spatial_pca_summary_epoch_0006.json"
+    assert summary_path.exists()
+    with open(summary_path) as handle:
+        summary = json.load(handle)
+    assert summary["version"] == "v1_spatial_pca_baseline"
+    assert summary["not_grid_score_optimized"] is True
+    with np.load(stats_dir / "linear_spatial_pca_modes_epoch_0006.npz") as payload:
+        assert payload["W_top"].shape == (cfg.model.nh_bottleneck, 1)
+        assert payload["test_indices"].shape == (1,)
+        assert payload["fit_ratemaps"].shape == (1, 5, 5)
+        assert payload["test_ratemaps"].shape == (1, 5, 5)
+        assert payload["test_sacs"].shape == (1, 9, 9)
+    assert (stats_dir / "linear_spatial_pca_overview_epoch_0006.pdf").exists()
+    assert (stats_dir / "linear_spatial_pca_overview_epoch_0006.png").exists()
+    assert (stats_dir / "linear_spatial_pca_mode_maps_epoch_0006.pdf").exists()
 
 
 class _AnalysisDummyModel:

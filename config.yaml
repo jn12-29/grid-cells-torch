@@ -10,7 +10,7 @@ task:
   targets_type: "softmax" # training-target encoding: "softmax"/"voronoi"/"sample"/"normalized"
   lstm_init_type: "softmax" # LSTM initial-state encoding: same options as targets_type, or "zeros"
   decode_type: "analytic" # decoder for PC/HDC logits: "analytic" (scale-invariant for positive scaled softmax-compatible raw scores, fallback weighted) or "weighted_mean"
-  velocity_noise: [0.0, 0.0, 0.0] # Gaussian noise std devs (σvx, σvy, σω) added to input velocities
+  velocity_noise: [0.0, 0.0, 0.0] # Gaussian nois'e std devs (σvx, σvy, σω) added to input velocities
   # Motion model parameters (Sargolini 2006 / Milford 2010 ~rodent locomotion)
   motion_dt: 0.02 # time step in seconds
   motion_b: 0.26 # OU angular velocity decay coefficient
@@ -43,7 +43,7 @@ training:
   momentum: 0.9 # momentum coefficient (used when optimizer is "rmsprop" or "sgd")
   adamw_betas: [0.9, 0.999] # Adam/AdamW β1 (gradient) and β2 (squared-gradient) decay rates
   adamw_eps: 1.0e-8 # Adam/AdamW ε for numerical stability in denominator
-  weight_decay: 1.0e-5
+  weight_decay: 0.0
   grad_clip: 1.0e-5 # gradient clipping threshold
   grad_clip_mode: "norm" # "norm" rescales selected gradients; "value" clamps individual gradient elements
   grad_clip_scope: "decoder" # "decoder" clips bottleneck+heads; "all" clips every trainable model parameter
@@ -81,7 +81,13 @@ analysis:
   compute_shuffle_significance: false
   compute_split_half: false
   compute_hd_selectivity: false
+  compute_linear_spatial_pca: false
   num_shuffles: 200
+  linear_spatial_pca_top_k: 16
+  linear_spatial_pca_fit_fraction: 0.5
+  linear_spatial_pca_num_shuffles: 0
+  linear_spatial_pca_save_plots: true
+  linear_spatial_pca_plot_top_n: 16
   scale_discreteness_num_shuffles: 500
   scale_discreteness_bins: 13
   scale_discreteness_min_bins: 10.0

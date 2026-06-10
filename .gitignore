@@ -39,3 +39,5 @@ test/
 .claude/
 .codex/
 .agents/
+
+tmp.sh

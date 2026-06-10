@@ -19,6 +19,10 @@ from typing import Callable, Optional
 import numpy as np
 import torch
 
+from grid_cells.analysis.linear_spatial_pca import (
+    analyze_linear_spatial_pca_gridness,
+    save_linear_spatial_pca_artifacts,
+)
 from grid_cells.analysis.spatial_stats import (
     analyze_bottleneck_spatial_stats,
     save_spatial_stats_artifacts,
@@ -427,6 +431,57 @@ class Evaluator:
             summary["n_reliable_grid"],
             summary["n_hd_selective"],
             summary["n_grid_and_hd"],
+        )
+        self._export_linear_spatial_pca(collected, epoch)
+
+    def _linear_spatial_pca_enabled(self) -> bool:
+        """Resolve whether linear spatial-PCA mode analysis should run."""
+        analysis_cfg = getattr(self.cfg, "analysis", None)
+        return bool(getattr(analysis_cfg, "enabled", False)) and bool(
+            getattr(analysis_cfg, "compute_linear_spatial_pca", False)
+        )
+
+    def _export_linear_spatial_pca(
+        self,
+        collected: EvaluationCollection,
+        epoch: int,
+    ) -> None:
+        """Write linear spatial-PCA gridness artifacts when enabled."""
+        if not self._linear_spatial_pca_enabled():
+            return
+
+        analysis_cfg = getattr(self.cfg, "analysis", None)
+        result = analyze_linear_spatial_pca_gridness(
+            self.scorer,
+            np.concatenate(collected.analysis_pos_list, axis=0),
+            np.concatenate(collected.analysis_bottleneck_list, axis=0),
+            top_k=int(getattr(analysis_cfg, "linear_spatial_pca_top_k", 16)),
+            fit_fraction=float(
+                getattr(analysis_cfg, "linear_spatial_pca_fit_fraction", 0.5)
+            ),
+            num_shuffles=int(
+                getattr(analysis_cfg, "linear_spatial_pca_num_shuffles", 0)
+            ),
+            min_shift_fraction=float(getattr(analysis_cfg, "min_shift_fraction", 0.1)),
+            random_seed=int(getattr(analysis_cfg, "random_seed", 0)),
+        )
+        paths = save_linear_spatial_pca_artifacts(
+            result,
+            self._artifact_dir("eval_stats"),
+            epoch,
+            save_plots=bool(
+                getattr(analysis_cfg, "linear_spatial_pca_save_plots", True)
+            ),
+            plot_top_n=int(getattr(analysis_cfg, "linear_spatial_pca_plot_top_n", 16)),
+            pdf_dpi=getattr(self.cfg.training, "eval_pdf_dpi", 100),
+        )
+        summary = result["summary"]
+        self.logger.info(
+            "linear spatial PCA stats saved to %s  T_real=%s  p=%s  top_k=%d",
+            paths["csv"],
+            summary["T_real"],
+            summary["p_value"],
+            summary["top_k"],
         )
 
     def _export_hdc_tuning_curves(

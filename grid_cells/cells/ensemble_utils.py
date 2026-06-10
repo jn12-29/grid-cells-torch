@@ -49,12 +49,18 @@ def _create_head_direction_ensembles(cfg) -> List[HeadDirectionCellEnsemble]:
 
 def get_cell_ensembles(cfg) -> tuple[List[PlaceCellEnsemble], List[HeadDirectionCellEnsemble]]:
     """Create all cell ensembles and load persisted centers when available."""
-    pc_ensembles = _create_place_cell_ensembles(cfg)
-    hdc_ensembles = _create_head_direction_ensembles(cfg)
+    pc_ensembles, hdc_ensembles = create_cell_ensembles_from_config(cfg)
     path = resolve_existing_cell_centers_path(cfg)
     if path is not None:
         pc_centers, hdc_centers = load_cell_centers(path, cfg)
         apply_cell_centers(pc_ensembles, hdc_ensembles, pc_centers, hdc_centers)
+    return pc_ensembles, hdc_ensembles
+
+
+def create_cell_ensembles_from_config(cfg) -> tuple[List[PlaceCellEnsemble], List[HeadDirectionCellEnsemble]]:
+    """Create all cell ensembles without loading persisted centers."""
+    pc_ensembles = _create_place_cell_ensembles(cfg)
+    hdc_ensembles = _create_head_direction_ensembles(cfg)
     return pc_ensembles, hdc_ensembles
 
 
