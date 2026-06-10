@@ -81,6 +81,7 @@ CONFIG_OVERRIDE_SPECS = {
     },
     "analysis": {
         "enabled": {"type": str2bool},
+        "bottleneck_activation": {"type": str, "choices": ("raw", "relu")},
         "compute_grid_selectivity": {"type": str2bool},
         "compute_grid_geometry": {"type": str2bool},
         "compute_shuffle_significance": {"type": str2bool},

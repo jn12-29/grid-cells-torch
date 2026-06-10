@@ -31,11 +31,24 @@ from grid_cells.cells.decoding import logits_to_cell_activations
 
 
 _METRIC_RATIO_EPS = 1e-12
+_BOTTLENECK_ACTIVATION_MODES = ("raw", "relu")
 
 
 def _metric_ratio(numerator: float, denominator: float) -> float:
     """Return a stable diagnostic ratio for nonnegative scalar metrics."""
     return numerator / max(denominator, _METRIC_RATIO_EPS)
+
+
+def _normalize_bottleneck_activation(value) -> str:
+    """Return the configured bottleneck activation mode for analysis artifacts."""
+    mode = str(value).lower()
+    if mode not in _BOTTLENECK_ACTIVATION_MODES:
+        expected = ", ".join(repr(item) for item in _BOTTLENECK_ACTIVATION_MODES)
+        raise ValueError(
+            f"Unsupported analysis.bottleneck_activation={value!r}; "
+            f"expected one of: {expected}."
+        )
+    return mode
 
 
 @dataclass
@@ -181,6 +194,7 @@ class Evaluator:
         analysis_hd_list = []
         analysis_bottleneck_list = []
         analysis_enabled = self._analysis_enabled()
+        bottleneck_activation = self._bottleneck_activation()
         max_analysis_traj = self._max_analysis_trajectories()
         analysis_traj_count = 0
 
@@ -197,6 +211,11 @@ class Evaluator:
                     batch["ego_vel"],
                     training=False,
                 )
+                analysis_bottleneck = self._apply_bottleneck_activation(
+                    bottleneck,
+                    bottleneck_activation,
+                )
+                analysis_bottleneck_np = analysis_bottleneck.detach().cpu().numpy()
                 pos_mse = self.hooks.compute_position_mse(
                     pc_logits,
                     batch["target_pos"],
@@ -227,7 +246,7 @@ class Evaluator:
                 eval_first_hd_batches += 1
                 self.scorer.accumulate_ratemaps(
                     batch["target_pos"].detach().cpu().numpy(),
-                    bottleneck.detach().cpu().numpy(),
+                    analysis_bottleneck_np,
                     ratemap_sums,
                     ratemap_counts,
                 )
@@ -243,7 +262,7 @@ class Evaluator:
                             batch["target_hd"][:take].detach().cpu().numpy()
                         )
                         analysis_bottleneck_list.append(
-                            bottleneck[:take].detach().cpu().numpy()
+                            analysis_bottleneck_np[:take]
                         )
                         analysis_traj_count += take
 
@@ -288,6 +307,22 @@ class Evaluator:
         """Resolve whether statistical analysis artifacts should be exported."""
         analysis_cfg = getattr(self.cfg, "analysis", None)
         return bool(getattr(analysis_cfg, "enabled", False))
+
+    def _bottleneck_activation(self) -> str:
+        """Resolve the bottleneck transform used by eval analysis artifacts."""
+        analysis_cfg = getattr(self.cfg, "analysis", None)
+        return _normalize_bottleneck_activation(
+            getattr(analysis_cfg, "bottleneck_activation", "relu")
+        )
+
+    @staticmethod
+    def _apply_bottleneck_activation(bottleneck: torch.Tensor, mode: str) -> torch.Tensor:
+        """Apply the configured analysis-only bottleneck transform."""
+        if mode == "relu":
+            return torch.relu(bottleneck)
+        if mode == "raw":
+            return bottleneck
+        raise ValueError(f"Unsupported bottleneck activation mode: {mode!r}")
 
     def _max_analysis_trajectories(self) -> int:
         """Return the configured cap on eval trajectories retained for analysis."""

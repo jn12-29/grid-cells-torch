@@ -28,7 +28,7 @@
 - 精简 `train.log` 和 TensorBoard 日志，包括 per-module 梯度诊断指标。
 - 在训练与评估中记录解码位置和头朝向指标，包括全序列 `pos_mse` / `hd_mae_rad`，以及首个时间步诊断指标 `first_pos_mse` / `first_hd_mae_rad`。
 - 支持分页 rate-map PDF、HDC tuning PDF，以及训练评估和数据生成共用的 3-panel MP4。
-- 可选 bottleneck 单元统计分析，包括 circular-shift grid-score 显著性、split-half reliability、头朝向选择性，以及独立的 v1 linear spatial-PCA gridness baseline。
+- 可选 bottleneck 单元统计分析，包括 circular-shift grid-score 显著性、split-half reliability、头朝向选择性，以及独立的 v1 linear spatial-PCA gridness baseline。`analysis.bottleneck_activation` 控制 analysis artifacts 使用的 bottleneck activation；`raw` 会直接分析 signed bottleneck 输出。
 - 提供以 CLI 为中心的数据生成、可视化和实验管理流程。
 
 ## 📚 参考
@@ -80,8 +80,8 @@ python analyze_checkpoint.py --checkpoint results/<run>/checkpoints/checkpoint_e
 # 或指定包含 train.npz 和 eval.npz 的数据集目录
 python train.py --training.datadir data/datasets/<dataset-id>
 
-# 或显式指定默认按 epoch 更新的学习率调度
-python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
+# 或切换到 step 学习率调度
+python train.py --training.lr_scheduler step --training.lr_step_size 10 --training.lr_gamma 0.8
 
 # 或按最大绝对梯度值等比缩放全部梯度
 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
@@ -94,6 +94,9 @@ python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shu
 
 # 或只运行 per-unit Banino-style grid geometry 分析
 python train.py --analysis.compute_grid_selectivity false --analysis.compute_grid_geometry true --analysis.compute_shuffle_significance false --analysis.compute_split_half false --analysis.compute_hd_selectivity false
+
+# 或直接分析 signed bottleneck 输出
+python train.py --analysis.bottleneck_activation raw
 
 # 或启用 v1 linear spatial-PCA gridness baseline diagnostics
 python train.py --analysis.compute_linear_spatial_pca true --analysis.linear_spatial_pca_top_k 16 --analysis.linear_spatial_pca_num_shuffles 20 --analysis.linear_spatial_pca_plot_top_n 16
@@ -132,11 +135,11 @@ tensorboard --logdir results
 - `checkpoints/checkpoint_epoch_XXXX.pt`：按配置在完成指定 epoch 后保存的 save-only checkpoint。
 - `checkpoints/checkpoint_final.pt`：训练正常完成后保存的 final save-only checkpoint。
 - `ckpt_analysis/<checkpoint_stem>/`：`analyze_checkpoint.py` 的默认输出目录，用于从已保存 checkpoint 重新导出完整 eval/analysis 产物，并避免覆盖训练时产物。
-- `eval_plots/rates_and_sac_epoch_XXXX.pdf`：rate map 和空间自相关图。
+- `eval_plots/rates_and_sac_epoch_XXXX.pdf`：由配置的 analysis bottleneck activation 计算出的 rate map 和空间自相关图。
 - `eval_plots/hdc_tuning_epoch_XXXX.pdf`：HDC tuning 曲线。
 - `eval_videos/eval_animation_epoch_XXXX.mp4`：按顺序拼接后的 eval 轨迹动画；多条轨迹会合成一个视频。
-- `eval_stats/grid_stats_epoch_XXXX.csv`、`eval_stats/grid_stats_epoch_XXXX.npz`、`eval_stats/grid_stats_summary_epoch_XXXX.json`、`eval_stats/grid_scale_histograms_epoch_XXXX.pdf`、`eval_stats/grid_scale_histograms_epoch_XXXX.png`：当 `analysis.enabled=true` 时导出的 bottleneck 单元 grid 显著性、Banino-style grid scale、split-half reliability、头朝向选择性和 mixed-selectivity 计数。可用 `analysis.compute_grid_selectivity`、`analysis.compute_grid_geometry`、`analysis.compute_shuffle_significance`、`analysis.compute_split_half` 和 `analysis.compute_hd_selectivity` 单独开关统计模块；关闭的模块仍保留 artifact 字段，并写入 `NaN` 或 `false` 占位值。Grid-scale summary 同时包含所有 finite per-unit scales，限制在 FDR-significant grid units 上的 `grid_fdr_*` 版本，以及限制在 `grid_score_60 >= analysis.gridness_threshold` units 上的 `grid_threshold_*` 版本，包括 Banino-style discreteness shuffle 显著性和 1D GMM/BIC scale-cluster fitting。Scale histogram 图会展示所选 population 的 scale 分布，并叠加拟合出的 GMM 曲线和各 component 峰位。
-- `eval_stats/linear_spatial_pca_modes_epoch_XXXX.csv`、`eval_stats/linear_spatial_pca_modes_epoch_XXXX.npz`、`eval_stats/linear_spatial_pca_summary_epoch_XXXX.json`、`eval_stats/linear_spatial_pca_overview_epoch_XXXX.pdf`、`eval_stats/linear_spatial_pca_overview_epoch_XXXX.png`、`eval_stats/linear_spatial_pca_mode_maps_epoch_XXXX.pdf`：当 `analysis.enabled=true` 且 `analysis.compute_linear_spatial_pca=true` 时导出的可选 v1 baseline diagnostics。该 baseline 在 fit trajectories 上拟合正交 spatial-PCA 方向，在 held-out trajectories 上评估投影 mode 的 gridness，并记录 `not_grid_score_optimized=true`；它不是直接优化 grid score 的 `W` 搜索。Overview 图展示 held-out mode grid scores、fit variance explained、shuffle-null `T`、variance-vs-gridness scatter 和 `W_top.T` loadings。Mode-map PDF 按 held-out grid score 排序展示前 `analysis.linear_spatial_pca_plot_top_n` 个 mode，包括 fit/test rate maps、held-out SACs 和 loading weights。设置 `analysis.linear_spatial_pca_save_plots=false` 时只写 CSV/NPZ/JSON 数据 artifact。
+- `eval_stats/grid_stats_epoch_XXXX.csv`、`eval_stats/grid_stats_epoch_XXXX.npz`、`eval_stats/grid_stats_summary_epoch_XXXX.json`、`eval_stats/grid_scale_histograms_epoch_XXXX.pdf`、`eval_stats/grid_scale_histograms_epoch_XXXX.png`：当 `analysis.enabled=true` 时导出的 bottleneck 单元 grid 显著性、Banino-style grid scale、split-half reliability、头朝向选择性和 mixed-selectivity 计数，使用配置的 analysis bottleneck activation。可用 `analysis.compute_grid_selectivity`、`analysis.compute_grid_geometry`、`analysis.compute_shuffle_significance`、`analysis.compute_split_half` 和 `analysis.compute_hd_selectivity` 单独开关统计模块；关闭的模块仍保留 artifact 字段，并写入 `NaN` 或 `false` 占位值。Grid-scale summary 同时包含所有 finite per-unit scales，限制在 FDR-significant grid units 上的 `grid_fdr_*` 版本，以及限制在 `grid_score_60 >= analysis.gridness_threshold` units 上的 `grid_threshold_*` 版本，包括 Banino-style discreteness shuffle 显著性和 1D GMM/BIC scale-cluster fitting。Scale histogram 图会展示所选 population 的 scale 分布，并叠加拟合出的 GMM 曲线和各 component 峰位。
+- `eval_stats/linear_spatial_pca_modes_epoch_XXXX.csv`、`eval_stats/linear_spatial_pca_modes_epoch_XXXX.npz`、`eval_stats/linear_spatial_pca_summary_epoch_XXXX.json`、`eval_stats/linear_spatial_pca_overview_epoch_XXXX.pdf`、`eval_stats/linear_spatial_pca_overview_epoch_XXXX.png`、`eval_stats/linear_spatial_pca_mode_maps_epoch_XXXX.pdf`：当 `analysis.enabled=true` 且 `analysis.compute_linear_spatial_pca=true` 时导出的可选 v1 baseline diagnostics，使用配置的 analysis bottleneck activation。该 baseline 在 fit trajectories 上拟合正交 spatial-PCA 方向，在 held-out trajectories 上评估投影 mode 的 gridness，并记录 `not_grid_score_optimized=true`；它不是直接优化 grid score 的 `W` 搜索。Overview 图展示 held-out mode grid scores、fit variance explained、shuffle-null `T`、variance-vs-gridness scatter 和 `W_top.T` loadings。Mode-map PDF 按 held-out grid score 排序展示前 `analysis.linear_spatial_pca_plot_top_n` 个 mode，包括 fit/test rate maps、held-out SACs 和 loading weights。设置 `analysis.linear_spatial_pca_save_plots=false` 时只写 CSV/NPZ/JSON 数据 artifact。
 
 ## 🗂️ 仓库结构
 
@@ -165,7 +168,7 @@ grid-cells-torch/
 - 每次训练都会把应用 CLI 覆盖后的 effective config 保存到 `<run directory>/config.yaml`。
 - Checkpoint 当前是 save-only 产物，尚未实现从 checkpoint 恢复训练。可以用 `analyze_checkpoint.py --checkpoint <path>` 从 checkpoint 权重重新导出完整 eval/analysis 产物；默认输出到 `<run directory>/ckpt_analysis/<checkpoint_stem>/`，也可以用 `--output_dir` 指定其它目录。
 - 优化器：`training.optimizer` 支持 `rmsprop`、`adamw`、`adam` 和 `sgd`；`training.momentum` 作用于 RMSprop 和 SGD。
-- 学习率调度默认使用 `training.lr_scheduler: "cosine"`；可用 `--training.lr_scheduler none` 关闭，或用 `--training.lr_scheduler step` 切换到 StepLR。
+- 学习率调度支持 `cosine`、`step` 和 `none`；StepLR 使用 `training.lr_step_size` 和 `training.lr_gamma`。
 - 梯度裁剪使用 `training.grad_clip` 作为阈值，默认是 `training.grad_clip_mode: "norm"` 且作用于 `decoder` 范围；`training.grad_clip_mode` 支持 `value` 逐元素裁剪和 `norm` 等比缩放，`training.grad_clip_scope` 支持 `decoder` 和 `all`，`training.grad_clip_norm_type: "inf"` 表示按最大绝对梯度值做 norm clipping。训练会采样记录 `state_init`、`cell_init`、`lstm`、`bottleneck`、`pc_heads` 和 `hdc_heads` 的 per-module 梯度诊断；TensorBoard 的 step 和 epoch-mean 标量位于 `train/grad/<module>/...`，`train.log` 会记录精简的 epoch sampled mean。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。
@@ -181,12 +184,12 @@ grid-cells-torch/
   `grid_cells/analysis` 管理评分与绘图辅助。
   `grid_cells/viz` 管理动画渲染。
 - 共享动画默认参数统一放在 `config.yaml` 的 `visualization.anim_*` 下，`train.py` 和 `generate_data.py` 都可以通过 CLI 覆盖。
-- 统计评估默认参数统一放在 `analysis.*` 下；`analysis.max_eval_trajectories` 会限制 `spatial_stats` 和可选 linear spatial-PCA 分析保留的 eval 子集大小。
+- 统计评估参数统一放在 `analysis.*` 下；`analysis.bottleneck_activation` 控制 eval rate-map/grid-score 和统计分析输入，`raw` 会直接分析 signed bottleneck 输出。`analysis.max_eval_trajectories` 会限制 `spatial_stats` 和可选 linear spatial-PCA 分析保留的 eval 子集大小。
 - 训练始终会先在 epoch 0 执行一次 baseline evaluation，然后每完成 `training.eval_every` 个 epoch 再评估一次。`training.eval_plot_every` 按这些 evaluation 调用计数，包括 epoch 0 baseline，用来决定是否导出 PDF 和动画。
 - 首个时间步指标会解码模型在 timestep 0 的输出，并与 `target_pos[:, 0]` / `target_hd[:, 0]` 比较。这个目标是第一步速度更新后的状态，不是用于初始化 LSTM 的原始 `init_pos` / `init_hd`。
 - 常见覆盖示例：
   `python train.py --task.env_size 2.4 --training.batch_size 32`
-  `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`
+  `python train.py --training.lr_scheduler step --training.lr_step_size 10 --training.lr_gamma 0.8`
   `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` 会打印一份精简的常用训练、数据生成、checkpoint analysis 和 TensorBoard 命令清单。
 - 项目维护说明和工作流契约集中放在 `docs/maintenance.md`。

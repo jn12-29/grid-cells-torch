@@ -28,7 +28,7 @@ README-safe assets are mirrored under `docs/assets/readme/`.
 - Compact `train.log` and TensorBoard logging, including per-module gradient diagnostics.
 - Decoded-position and head-direction metrics for training and evaluation, including whole-sequence `pos_mse` / `hd_mae_rad` and first-step `first_pos_mse` / `first_hd_mae_rad` diagnostics.
 - Paginated rate-map PDFs, HDC tuning PDFs, and shared 3-panel MP4s for eval and generated data.
-- Optional bottleneck-unit statistical analysis with circular-shift grid-score significance, split-half reliability, head-direction selectivity, and a separate v1 linear spatial-PCA gridness baseline.
+- Optional bottleneck-unit statistical analysis with circular-shift grid-score significance, split-half reliability, head-direction selectivity, and a separate v1 linear spatial-PCA gridness baseline. `analysis.bottleneck_activation` controls the bottleneck activations used by analysis artifacts; `raw` analyzes signed bottleneck outputs directly.
 - CLI-oriented data generation, visualization, and experiment management.
 
 ## 📚 References
@@ -79,8 +79,8 @@ python analyze_checkpoint.py --checkpoint results/<run>/checkpoints/checkpoint_e
 # or train with a specific dataset directory containing train.npz and eval.npz
 python train.py --training.datadir data/datasets/<dataset-id>
 
-# or make the default epoch-level learning-rate scheduler explicit
-python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
+# or switch to a step learning-rate scheduler
+python train.py --training.lr_scheduler step --training.lr_step_size 10 --training.lr_gamma 0.8
 
 # or rescale all gradients by the largest absolute gradient value
 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
@@ -93,6 +93,9 @@ python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shu
 
 # or run only per-unit Banino-style grid geometry analysis
 python train.py --analysis.compute_grid_selectivity false --analysis.compute_grid_geometry true --analysis.compute_shuffle_significance false --analysis.compute_split_half false --analysis.compute_hd_selectivity false
+
+# or analyze signed bottleneck outputs directly
+python train.py --analysis.bottleneck_activation raw
 
 # or enable the v1 linear spatial-PCA gridness baseline diagnostics
 python train.py --analysis.compute_linear_spatial_pca true --analysis.linear_spatial_pca_top_k 16 --analysis.linear_spatial_pca_num_shuffles 20 --analysis.linear_spatial_pca_plot_top_n 16
@@ -131,11 +134,11 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 - `checkpoints/checkpoint_epoch_XXXX.pt`: periodic save-only checkpoint after configured completed epochs.
 - `checkpoints/checkpoint_final.pt`: final save-only checkpoint after normal training completion.
 - `ckpt_analysis/<checkpoint_stem>/`: default output directory for `analyze_checkpoint.py`, which reruns full eval/analysis artifacts from a saved checkpoint without overwriting training-time artifacts.
-- `eval_plots/rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms.
+- `eval_plots/rates_and_sac_epoch_XXXX.pdf`: rate maps and spatial autocorrelograms computed from the configured analysis bottleneck activation.
 - `eval_plots/hdc_tuning_epoch_XXXX.pdf`: HDC tuning curves.
 - `eval_videos/eval_animation_epoch_XXXX.mp4`: sequential eval trajectory animation; multiple trajectories are joined into one video.
-- `eval_stats/grid_stats_epoch_XXXX.csv`, `eval_stats/grid_stats_epoch_XXXX.npz`, `eval_stats/grid_stats_summary_epoch_XXXX.json`, `eval_stats/grid_scale_histograms_epoch_XXXX.pdf`, `eval_stats/grid_scale_histograms_epoch_XXXX.png`: bottleneck-unit grid significance, Banino-style grid scale, split-half reliability, head-direction selectivity, and mixed-selectivity counts when `analysis.enabled=true`. Individual statistical modules can be toggled with `analysis.compute_grid_selectivity`, `analysis.compute_grid_geometry`, `analysis.compute_shuffle_significance`, `analysis.compute_split_half`, and `analysis.compute_hd_selectivity`; disabled modules keep their artifact fields with `NaN` or `false` placeholder values. Grid-scale summary fields include all finite per-unit scales plus `grid_fdr_*` variants for FDR-significant grid units and `grid_threshold_*` variants for `grid_score_60 >= analysis.gridness_threshold` units, including Banino-style discreteness shuffle significance and 1D GMM/BIC scale-cluster fitting. The scale histogram plots show the selected population scale distributions with the fitted GMM curve and component peak locations.
-- `eval_stats/linear_spatial_pca_modes_epoch_XXXX.csv`, `eval_stats/linear_spatial_pca_modes_epoch_XXXX.npz`, `eval_stats/linear_spatial_pca_summary_epoch_XXXX.json`, `eval_stats/linear_spatial_pca_overview_epoch_XXXX.pdf`, `eval_stats/linear_spatial_pca_overview_epoch_XXXX.png`, `eval_stats/linear_spatial_pca_mode_maps_epoch_XXXX.pdf`: optional v1 baseline diagnostics when `analysis.enabled=true` and `analysis.compute_linear_spatial_pca=true`. The baseline fits orthogonal spatial-PCA directions on fit trajectories, evaluates projected-mode gridness on held-out trajectories, and records `not_grid_score_optimized=true`; it is not a direct grid-score-optimized `W` search. The overview plots held-out mode grid scores, fit variance explained, shuffle-null `T`, variance-vs-gridness scatter, and `W_top.T` loadings. The mode-map PDF shows the top `analysis.linear_spatial_pca_plot_top_n` modes ranked by held-out grid score, with fit/test rate maps, held-out SACs, and loading weights. Set `analysis.linear_spatial_pca_save_plots=false` to write only the CSV/NPZ/JSON data artifacts.
+- `eval_stats/grid_stats_epoch_XXXX.csv`, `eval_stats/grid_stats_epoch_XXXX.npz`, `eval_stats/grid_stats_summary_epoch_XXXX.json`, `eval_stats/grid_scale_histograms_epoch_XXXX.pdf`, `eval_stats/grid_scale_histograms_epoch_XXXX.png`: bottleneck-unit grid significance, Banino-style grid scale, split-half reliability, head-direction selectivity, and mixed-selectivity counts when `analysis.enabled=true`, using the configured analysis bottleneck activation. Individual statistical modules can be toggled with `analysis.compute_grid_selectivity`, `analysis.compute_grid_geometry`, `analysis.compute_shuffle_significance`, `analysis.compute_split_half`, and `analysis.compute_hd_selectivity`; disabled modules keep their artifact fields with `NaN` or `false` placeholder values. Grid-scale summary fields include all finite per-unit scales plus `grid_fdr_*` variants for FDR-significant grid units and `grid_threshold_*` variants for `grid_score_60 >= analysis.gridness_threshold` units, including Banino-style discreteness shuffle significance and 1D GMM/BIC scale-cluster fitting. The scale histogram plots show the selected population scale distributions with the fitted GMM curve and component peak locations.
+- `eval_stats/linear_spatial_pca_modes_epoch_XXXX.csv`, `eval_stats/linear_spatial_pca_modes_epoch_XXXX.npz`, `eval_stats/linear_spatial_pca_summary_epoch_XXXX.json`, `eval_stats/linear_spatial_pca_overview_epoch_XXXX.pdf`, `eval_stats/linear_spatial_pca_overview_epoch_XXXX.png`, `eval_stats/linear_spatial_pca_mode_maps_epoch_XXXX.pdf`: optional v1 baseline diagnostics when `analysis.enabled=true` and `analysis.compute_linear_spatial_pca=true`, using the configured analysis bottleneck activation. The baseline fits orthogonal spatial-PCA directions on fit trajectories, evaluates projected-mode gridness on held-out trajectories, and records `not_grid_score_optimized=true`; it is not a direct grid-score-optimized `W` search. The overview plots held-out mode grid scores, fit variance explained, shuffle-null `T`, variance-vs-gridness scatter, and `W_top.T` loadings. The mode-map PDF shows the top `analysis.linear_spatial_pca_plot_top_n` modes ranked by held-out grid score, with fit/test rate maps, held-out SACs, and loading weights. Set `analysis.linear_spatial_pca_save_plots=false` to write only the CSV/NPZ/JSON data artifacts.
 
 ## 🗂️ Repo Layout
 
@@ -164,7 +167,7 @@ grid-cells-torch/
 - Each training run saves the effective config to `<run directory>/config.yaml` after applying CLI overrides.
 - Checkpoints are save-only artifacts; training resume is not implemented yet. Use `analyze_checkpoint.py --checkpoint <path>` to rerun full eval/analysis artifacts from checkpoint weights. By default, the post-hoc output is written to `<run directory>/ckpt_analysis/<checkpoint_stem>/`; pass `--output_dir` to choose another directory.
 - Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, `adam`, and `sgd`; `training.momentum` applies to RMSprop and SGD.
-- Learning-rate scheduling defaults to `training.lr_scheduler: "cosine"`; use `--training.lr_scheduler none` to disable it or `--training.lr_scheduler step` for StepLR.
+- Learning-rate scheduling supports `cosine`, `step`, and `none`; StepLR uses `training.lr_step_size` and `training.lr_gamma`.
 - Gradient clipping uses `training.grad_clip` as the threshold and defaults to `training.grad_clip_mode: "norm"` on the `decoder` scope. `training.grad_clip_mode` supports `value` elementwise clipping and `norm` proportional rescaling; `training.grad_clip_scope` supports `decoder` and `all`; `training.grad_clip_norm_type: "inf"` uses the largest absolute gradient value for norm clipping. Training logs sampled per-module gradient diagnostics for `state_init`, `cell_init`, `lstm`, `bottleneck`, `pc_heads`, and `hdc_heads`; TensorBoard receives step and epoch-mean scalars under `train/grad/<module>/...`, and `train.log` receives compact epoch sampled means.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
@@ -180,12 +183,12 @@ grid-cells-torch/
   `grid_cells/analysis` owns scoring and plotting helpers.
   `grid_cells/viz` owns animation rendering.
 - Shared animation defaults live under `visualization.anim_*` in `config.yaml`, and both `train.py` and `generate_data.py` can override them from the CLI.
-- Statistical evaluation defaults live under `analysis.*`; `analysis.max_eval_trajectories` caps the eval subset retained for `spatial_stats` and optional linear spatial-PCA analysis.
+- Statistical evaluation settings live under `analysis.*`; `analysis.bottleneck_activation` controls eval rate-map/grid-score and statistical-analysis inputs, and `raw` analyzes signed bottleneck outputs directly. `analysis.max_eval_trajectories` caps the eval subset retained for `spatial_stats` and optional linear spatial-PCA analysis.
 - Training always runs a baseline evaluation at epoch 0, then evaluates every `training.eval_every` completed epochs. `training.eval_plot_every` counts these evaluation calls, including the epoch-0 baseline, when deciding whether to export PDFs and animations.
 - First-step metrics decode the model output at timestep 0 and compare it with `target_pos[:, 0]` / `target_hd[:, 0]`. This target is the first post-velocity-update state, not the raw `init_pos` / `init_hd` used to seed the LSTM.
 - Typical override examples:
   `python train.py --task.env_size 2.4 --training.batch_size 32`
-  `python train.py --training.lr_scheduler cosine --training.lr_min 1e-5`
+  `python train.py --training.lr_scheduler step --training.lr_step_size 10 --training.lr_gamma 0.8`
   `python generate_data.py --visualization.anim_fps 30 --data_generation.num_workers 4`
 - `run_scripts.sh` prints a compact list of common train, generate, checkpoint-analysis, and TensorBoard commands.
 - Project maintenance notes and workflow contracts are kept in `docs/maintenance.md`.

@@ -76,6 +76,7 @@ visualization:
 
 analysis:
   enabled: true
+  bottleneck_activation: "relu"
   compute_grid_selectivity: true
   compute_grid_geometry: true
   compute_shuffle_significance: false

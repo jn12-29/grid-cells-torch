@@ -113,6 +113,7 @@ def make_cfg():
         ),
         analysis=SimpleNamespace(
             enabled=False,
+            bottleneck_activation="relu",
             compute_grid_selectivity=True,
             compute_grid_geometry=True,
             compute_shuffle_significance=True,
@@ -918,6 +919,8 @@ def test_analyze_checkpoint_parse_args_allows_only_posthoc_overrides():
         [
             "--checkpoint",
             "results/run/checkpoints/checkpoint_epoch_0007.pt",
+            "--analysis.bottleneck_activation",
+            "raw",
             "--analysis.compute_linear_spatial_pca",
             "true",
             "--training.eval_num_workers",
@@ -928,6 +931,7 @@ def test_analyze_checkpoint_parse_args_allows_only_posthoc_overrides():
     )
 
     assert args.checkpoint.endswith("checkpoint_epoch_0007.pt")
+    assert args.analysis__bottleneck_activation == "raw"
     assert args.analysis__compute_linear_spatial_pca is True
     assert args.training__eval_num_workers == 0
     assert args.visualization__anim_step == 2
@@ -1048,6 +1052,7 @@ def test_analyze_checkpoint_backfills_old_posthoc_config_fields(tmp_path):
     old_payload = copy.deepcopy(payload)
     old_analysis = old_payload["config"]["analysis"]
     missing_analysis_fields = (
+        "bottleneck_activation",
         "compute_linear_spatial_pca",
         "linear_spatial_pca_top_k",
         "linear_spatial_pca_fit_fraction",
@@ -1076,6 +1081,7 @@ def test_analyze_checkpoint_backfills_old_posthoc_config_fields(tmp_path):
     cfg = analyze_checkpoint_module.build_analysis_config(old_payload, args)
 
     assert cfg.analysis.compute_linear_spatial_pca is True
+    assert cfg.analysis.bottleneck_activation == "relu"
     assert cfg.analysis.linear_spatial_pca_top_k == 7
     assert cfg.analysis.linear_spatial_pca_fit_fraction == 0.5
     assert cfg.analysis.linear_spatial_pca_num_shuffles == 0
@@ -1360,6 +1366,8 @@ def test_register_config_overrides_supports_shared_sections():
             "false",
             "--analysis.compute_split_half",
             "false",
+            "--analysis.bottleneck_activation",
+            "raw",
             "--analysis.compute_linear_spatial_pca",
             "true",
             "--analysis.num_shuffles",
@@ -1407,6 +1415,7 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.analysis__compute_grid_geometry is False
     assert args.analysis__compute_shuffle_significance is False
     assert args.analysis__compute_split_half is False
+    assert args.analysis__bottleneck_activation == "raw"
     assert args.analysis__compute_linear_spatial_pca is True
     assert args.analysis__num_shuffles == 10
     assert args.analysis__linear_spatial_pca_top_k == 8
@@ -1465,6 +1474,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "false",
             "--analysis.compute_hd_selectivity",
             "false",
+            "--analysis.bottleneck_activation",
+            "raw",
             "--analysis.compute_linear_spatial_pca",
             "true",
             "--analysis.max_eval_trajectories",
@@ -1492,6 +1503,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.visualization__anim_step == 2
     assert args.analysis__enabled is False
     assert args.analysis__compute_hd_selectivity is False
+    assert args.analysis__bottleneck_activation == "raw"
     assert args.analysis__compute_linear_spatial_pca is True
     assert args.analysis__max_eval_trajectories == 16
 
@@ -2299,6 +2311,34 @@ class _AnalysisDummyModel:
         return pc_logits, hdc_logits, bottleneck, lstm_acts
 
 
+class _SignedBottleneckModel(_AnalysisDummyModel):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.last_bottleneck = None
+
+    def __call__(self, init_cond, ego_vel, training=False):
+        batch, seq_len = ego_vel.shape[:2]
+        pc_logits = [torch.zeros(batch, seq_len, 2, dtype=ego_vel.dtype)]
+        hdc_logits = [torch.zeros(batch, seq_len, 4, dtype=ego_vel.dtype)]
+        n_units = self.cfg.model.nh_bottleneck
+        bottleneck = torch.linspace(
+            -2.0,
+            2.0,
+            steps=batch * seq_len * n_units,
+            dtype=ego_vel.dtype,
+            device=ego_vel.device,
+        ).reshape(batch, seq_len, n_units)
+        lstm_acts = torch.zeros(
+            batch,
+            seq_len,
+            self.cfg.model.nh_lstm,
+            dtype=ego_vel.dtype,
+            device=ego_vel.device,
+        )
+        self.last_bottleneck = bottleneck.detach().cpu().numpy()
+        return pc_logits, hdc_logits, bottleneck, lstm_acts
+
+
 class _AnalysisDummyScorer:
     def allocate_ratemap_accumulators(self, n_units):
         return (
@@ -2312,6 +2352,15 @@ class _AnalysisDummyScorer:
 
     def finalize_ratemaps(self, ratemap_sums, ratemap_counts):
         return ratemap_sums
+
+
+class _CapturingAnalysisScorer(_AnalysisDummyScorer):
+    def __init__(self, captured):
+        self.captured = captured
+
+    def accumulate_ratemaps(self, positions, activations, ratemap_sums, ratemap_counts):
+        self.captured["ratemap_activations"] = activations.copy()
+        super().accumulate_ratemaps(positions, activations, ratemap_sums, ratemap_counts)
 
 
 def _minimal_analysis_result():
@@ -2343,6 +2392,115 @@ def _single_eval_batch():
         "target_pos": torch.zeros(1, 3, 2),
         "target_hd": torch.zeros(1, 3, 1),
     }
+
+
+def _run_signed_bottleneck_eval(monkeypatch, tmp_path, bottleneck_activation):
+    cfg = make_cfg()
+    cfg.training.save_dir = str(tmp_path)
+    cfg.training.eval_num_workers = 0
+    cfg.training.eval_chunk_size = 2
+    cfg.training.eval_plot_every = 0
+    cfg.analysis.enabled = True
+    cfg.analysis.bottleneck_activation = bottleneck_activation
+    cfg.analysis.compute_linear_spatial_pca = True
+    cfg.analysis.max_eval_trajectories = 2
+    captured = {}
+    pc_ens = [PlaceCellEnsemble(2, stdev=0.35, pos_min=-1.0, pos_max=1.0, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+
+    def fake_spatial_analyze(scorer, positions, head_directions, activations, **kwargs):
+        captured["spatial_stats_activations"] = activations.copy()
+        return _minimal_analysis_result()
+
+    def fake_linear_analyze(scorer, positions, activations, **kwargs):
+        captured["linear_pca_activations"] = activations.copy()
+        return {
+            "summary": {
+                "T_real": 0.0,
+                "p_value": 1.0,
+                "top_k": kwargs["top_k"],
+            }
+        }
+
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.analyze_bottleneck_spatial_stats",
+        fake_spatial_analyze,
+    )
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.analyze_linear_spatial_pca_gridness",
+        fake_linear_analyze,
+    )
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.save_spatial_stats_artifacts",
+        lambda *args, **kwargs: {"csv": str(tmp_path / "grid_stats.csv")},
+    )
+    monkeypatch.setattr(
+        "grid_cells.training.evaluation.save_linear_spatial_pca_artifacts",
+        lambda *args, **kwargs: {"csv": str(tmp_path / "linear_spatial_pca.csv")},
+    )
+    monkeypatch.setattr(
+        train_module,
+        "score_ratemaps",
+        lambda *args, **kwargs: (
+            np.zeros(cfg.model.nh_bottleneck),
+            np.zeros(cfg.model.nh_bottleneck),
+            None,
+            None,
+            None,
+        ),
+    )
+
+    batch = _single_eval_batch()
+    batch["init_pos"] = torch.zeros(2, 2)
+    batch["init_hd"] = torch.zeros(2, 1)
+    batch["ego_vel"] = torch.zeros(2, 3, 3)
+    batch["target_pos"] = torch.zeros(2, 3, 2)
+    batch["target_hd"] = torch.zeros(2, 3, 1)
+    model = _SignedBottleneckModel(cfg)
+
+    _evaluate(
+        model,
+        pc_ens,
+        hdc_ens,
+        _CapturingAnalysisScorer(captured),
+        [batch],
+        cfg,
+        torch.device("cpu"),
+        epoch=5,
+    )
+
+    captured["raw_bottleneck"] = model.last_bottleneck
+    return captured
+
+
+def test_evaluate_default_relu_bottleneck_activation_feeds_analysis_paths(
+    monkeypatch,
+    tmp_path,
+):
+    """Eval analysis consumers should see ReLU-transformed bottleneck activations."""
+    captured = _run_signed_bottleneck_eval(monkeypatch, tmp_path, "relu")
+    expected = np.maximum(captured["raw_bottleneck"], 0.0)
+
+    assert captured["raw_bottleneck"].min() < 0.0
+    assert captured["ratemap_activations"].min() >= 0.0
+    np.testing.assert_allclose(captured["ratemap_activations"], expected)
+    np.testing.assert_allclose(captured["spatial_stats_activations"], expected)
+    np.testing.assert_allclose(captured["linear_pca_activations"], expected)
+
+
+def test_evaluate_raw_bottleneck_activation_preserves_negative_analysis_inputs(
+    monkeypatch,
+    tmp_path,
+):
+    """The raw analysis mode should preserve pre-ReLU bottleneck values."""
+    captured = _run_signed_bottleneck_eval(monkeypatch, tmp_path, "raw")
+    expected = captured["raw_bottleneck"]
+
+    assert expected.min() < 0.0
+    assert captured["ratemap_activations"].min() < 0.0
+    np.testing.assert_allclose(captured["ratemap_activations"], expected)
+    np.testing.assert_allclose(captured["spatial_stats_activations"], expected)
+    np.testing.assert_allclose(captured["linear_pca_activations"], expected)
 
 
 def test_evaluate_passes_analysis_module_flags(monkeypatch, tmp_path):

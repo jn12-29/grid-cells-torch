@@ -61,14 +61,17 @@ CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_grid_selectivity false
 17. Train with the v1 linear spatial-PCA gridness baseline diagnostics
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_linear_spatial_pca true --analysis.linear_spatial_pca_top_k 16 --analysis.linear_spatial_pca_num_shuffles 20 --analysis.linear_spatial_pca_plot_top_n 16
 
-18. Train with the default cosine learning-rate scheduler made explicit
-CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler cosine --training.lr_min 1e-5
+18. Train while analyzing signed bottleneck outputs directly
+CUDA_VISIBLE_DEVICES=0 python train.py --analysis.bottleneck_activation raw
 
-19. Train with infinity-norm gradient clipping across all model parameters
+19. Train with the step learning-rate scheduler
+CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler step --training.lr_step_size 10 --training.lr_gamma 0.8
+
+20. Train with infinity-norm gradient clipping across all model parameters
 CUDA_VISIBLE_DEVICES=0 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
 
 Monitor
 
-20. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
+21. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
 tensorboard --logdir results
 EOF
