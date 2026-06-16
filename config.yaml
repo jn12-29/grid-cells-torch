@@ -75,31 +75,31 @@ visualization:
   anim_workers: 4 # parallel workers for frame rendering when ffmpeg is available
 
 analysis:
-  enabled: true
-  bottleneck_activation: "relu"
-  compute_grid_selectivity: true
-  compute_grid_geometry: true
-  compute_shuffle_significance: false
-  compute_split_half: false
-  compute_hd_selectivity: false
-  compute_linear_spatial_pca: false
-  num_shuffles: 200
-  linear_spatial_pca_top_k: 16
-  linear_spatial_pca_fit_fraction: 0.5
-  linear_spatial_pca_num_shuffles: 0
-  linear_spatial_pca_save_plots: true
-  linear_spatial_pca_plot_top_n: 16
-  scale_discreteness_num_shuffles: 500
-  scale_discreteness_bins: 13
-  scale_discreteness_min_bins: 10.0
-  scale_discreteness_max_bins: 36.0
-  scale_gmm_max_components: 8
-  gridness_threshold: 0.37
-  fdr_alpha: 0.05
-  min_shift_fraction: 0.1
-  split_half_min_corr: 0.3
-  max_eval_trajectories: 10000
-  random_seed: 0
+  enabled: true # write eval_stats statistical artifacts; basic eval rate-map scoring still runs when false
+  bottleneck_activation: "relu" # bottleneck transform for eval rate maps and analysis: "relu" or signed "raw"
+  compute_grid_selectivity: true # compute per-unit grid_score_60/grid_score_90 from spatial rate maps
+  compute_grid_geometry: true # estimate SAC peak-based grid scales and scale-valid flags
+  compute_shuffle_significance: false # enable circular-shift nulls for selected grid/HD modules when num_shuffles > 0
+  compute_split_half: false # compute odd/even trajectory split-half rate-map reliability
+  compute_hd_selectivity: false # compute bottleneck directional tuning, MRL, and preferred direction
+  compute_linear_spatial_pca: false # export optional v1 held-out gridness baseline for spatial-PCA modes
+  num_shuffles: 200 # circular-shift null samples for grid/HD significance
+  linear_spatial_pca_top_k: 16 # number of top orthogonal spatial-PCA modes to evaluate
+  linear_spatial_pca_fit_fraction: 0.5 # fraction of retained eval trajectories used to fit spatial-PCA directions
+  linear_spatial_pca_num_shuffles: 0 # refit circular-shift null samples for the linear spatial-PCA T statistic
+  linear_spatial_pca_save_plots: true # write linear_spatial_pca overview and mode-map plot artifacts
+  linear_spatial_pca_plot_top_n: 16 # held-out-score-ranked PCA modes shown in the mode-map PDF
+  scale_discreteness_num_shuffles: 500 # jitter null samples for population grid-scale discreteness
+  scale_discreteness_bins: 13 # histogram bins for Banino-style grid-scale discreteness in SAC-bin units
+  scale_discreteness_min_bins: 10.0 # lower histogram bound for grid-scale discreteness in SAC-bin units
+  scale_discreteness_max_bins: 36.0 # upper histogram bound for grid-scale discreteness in SAC-bin units
+  scale_gmm_max_components: 8 # maximum 1-D GMM components considered by BIC for scale clustering
+  gridness_threshold: 0.37 # fixed grid_score_60 threshold for grid_threshold_* scale summaries
+  fdr_alpha: 0.05 # Benjamini-Hochberg q-value cutoff for grid/HD FDR classifications
+  min_shift_fraction: 0.1 # minimum circular shift as a fraction of sequence length for shuffle nulls
+  split_half_min_corr: 0.3 # split-half correlation cutoff for reliable-grid classification
+  max_eval_trajectories: 10000 # retained eval trajectories capped for statistical analysis and spatial-PCA
+  random_seed: 0 # RNG seed for analysis shuffles, PCA fit/test split, and GMM initialization
 
 data_generation:
   num_samples: null # training trajectories to generate; null = steps_per_epoch × batch_size
