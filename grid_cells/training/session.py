@@ -9,6 +9,7 @@ Usage:
 """
 
 from dataclasses import dataclass
+import math
 import os
 import time
 from typing import Callable
@@ -60,8 +61,8 @@ def _grad_monitor_param_groups(model):
     return groups
 
 
-def _collect_grad_group_stats(params, norm_type: float):
-    """Return aggregate norm and max-absolute-gradient for one parameter group."""
+def _collect_grad_group_stats(params, norm_type: float, clip_threshold: float = None):
+    """Return aggregate gradient summary stats for one parameter group."""
     grads = [
         param.grad.detach()
         for param in params
@@ -70,45 +71,136 @@ def _collect_grad_group_stats(params, norm_type: float):
     if not grads:
         return None
 
-    max_abs = max(float(grad.abs().max().item()) for grad in grads)
+    max_abs = 0.0
+    sum_values = 0.0
+    sum_abs = 0.0
+    sum_squares = 0.0
+    numel = 0
+    clip_exceed_count = 0
+    per_param_norms = []
+    for grad in grads:
+        grad_abs = grad.abs()
+        max_abs = max(max_abs, float(grad_abs.max().item()))
+        sum_values += float(grad.sum().item())
+        sum_abs += float(grad_abs.sum().item())
+        sum_squares += float(grad.square().sum().item())
+        numel += int(grad.numel())
+        if clip_threshold is not None:
+            clip_exceed_count += int((grad_abs > clip_threshold).sum().item())
+        if norm_type != float("inf"):
+            per_param_norms.append(torch.linalg.vector_norm(grad, ord=norm_type))
+
+    if numel <= 0:
+        return None
+
     if norm_type == float("inf"):
         grad_norm = max_abs
     else:
-        per_param_norms = torch.stack(
-            [torch.linalg.vector_norm(grad, ord=norm_type) for grad in grads]
-        )
+        per_param_norms = torch.stack(per_param_norms)
         grad_norm = float(
             torch.linalg.vector_norm(per_param_norms, ord=norm_type).item()
         )
 
-    return {
+    grad_rms = math.sqrt(sum_squares / numel)
+    stats = {
         "norm": float(grad_norm),
+        "rms": float(grad_rms),
+        "mean_abs": float(sum_abs / numel),
+        "mean": float(sum_values / numel),
         "max_abs": float(max_abs),
+        "numel": float(numel),
     }
+    if clip_threshold is not None:
+        stats["clip_exceed_count"] = float(clip_exceed_count)
+    return stats
 
 
-def _collect_grad_monitor_stats(model, norm_type: float):
+def _collect_grad_monitor_stats(model, norm_type: float, clip_threshold: float):
     """Return gradient stats for all monitored model submodules with gradients."""
     stats = {}
     for module_name, params in _grad_monitor_param_groups(model).items():
-        group_stats = _collect_grad_group_stats(params, norm_type)
+        group_stats = _collect_grad_group_stats(params, norm_type, clip_threshold)
         if group_stats is not None:
             stats[module_name] = group_stats
     return stats
 
 
-def _merge_grad_monitor_stats(pre_clip_stats, post_clip_stats):
+def _snapshot_grad_monitor_grads(model):
+    """Clone monitored gradients so post-clip stats can count changed elements."""
+    snapshots = {}
+    for module_name, params in _grad_monitor_param_groups(model).items():
+        module_snapshot = []
+        for param in params:
+            if param.grad is None or param.grad.numel() <= 0:
+                continue
+            module_snapshot.append((param, param.grad.detach().clone()))
+        if module_snapshot:
+            snapshots[module_name] = module_snapshot
+    return snapshots
+
+
+def _collect_grad_monitor_change_stats(grad_snapshots, clip_threshold: float):
+    """Return changed-gradient counts and post-clip boundary counts."""
+    tolerance = max(1e-12, clip_threshold * 1e-6)
+    stats = {}
+    for module_name, module_snapshot in grad_snapshots.items():
+        numel = 0
+        changed_count = 0
+        post_saturated_count = 0
+        for param, pre_grad in module_snapshot:
+            if param.grad is None or param.grad.shape != pre_grad.shape:
+                continue
+            post_grad = param.grad.detach()
+            post_abs = post_grad.abs()
+            numel += int(pre_grad.numel())
+            changed_count += int(post_grad.ne(pre_grad).sum().item())
+            post_saturated_count += int(
+                (post_abs - clip_threshold).abs().le(tolerance).sum().item()
+            )
+        if numel > 0:
+            stats[module_name] = {
+                "numel": float(numel),
+                "changed_count": float(changed_count),
+                "post_saturated_count": float(post_saturated_count),
+            }
+    return stats
+
+
+def _merge_grad_monitor_stats(pre_clip_stats, post_clip_stats, change_stats=None):
     """Combine pre/post clipping stats into the public TensorBoard metric shape."""
     merged = {}
     for module_name, pre_stats in pre_clip_stats.items():
         post_stats = post_clip_stats.get(module_name)
         if post_stats is None:
             continue
+        numel = max(
+            float(pre_stats.get("numel", post_stats.get("numel", 0.0))),
+            _METRIC_RATIO_EPS,
+        )
+        module_change_stats = (change_stats or {}).get(module_name, {})
         merged[module_name] = {
             "pre_clip_norm": pre_stats["norm"],
             "post_clip_norm": post_stats["norm"],
+            "pre_clip_rms": pre_stats["rms"],
+            "post_clip_rms": post_stats["rms"],
+            "pre_clip_mean_abs": pre_stats["mean_abs"],
+            "post_clip_mean_abs": post_stats["mean_abs"],
+            "pre_clip_mean": pre_stats["mean"],
+            "post_clip_mean": post_stats["mean"],
             "pre_clip_max_abs": pre_stats["max_abs"],
             "post_clip_max_abs": post_stats["max_abs"],
+            "pre_clip_exceed_frac": _metric_ratio(
+                pre_stats.get("clip_exceed_count", 0.0),
+                numel,
+            ),
+            "clip_changed_frac": _metric_ratio(
+                module_change_stats.get("changed_count", 0.0),
+                numel,
+            ),
+            "post_clip_saturated_frac": _metric_ratio(
+                module_change_stats.get("post_saturated_count", 0.0),
+                numel,
+            ),
             "clip_ratio": _metric_ratio(post_stats["norm"], pre_stats["norm"]),
         }
     return merged
@@ -152,12 +244,26 @@ def _format_grad_monitor_log(grad_stats) -> str:
     parts = []
     for module_name, module_stats in grad_stats.items():
         parts.append(
-            "{} pre={:.4g} post={:.4g} max_abs={:.4g}->{:.4g} ratio={:.4g}".format(
+            (
+                "{} pre={:.4g} post={:.4g} rms={:.4g}->{:.4g} "
+                "mean_abs={:.4g}->{:.4g} mean={:.4g}->{:.4g} "
+                "max_abs={:.4g}->{:.4g} pre_exceed={:.4g} "
+                "changed={:.4g} saturated={:.4g} ratio={:.4g}"
+            ).format(
                 module_name,
                 module_stats["pre_clip_norm"],
                 module_stats["post_clip_norm"],
+                module_stats["pre_clip_rms"],
+                module_stats["post_clip_rms"],
+                module_stats["pre_clip_mean_abs"],
+                module_stats["post_clip_mean_abs"],
+                module_stats["pre_clip_mean"],
+                module_stats["post_clip_mean"],
                 module_stats["pre_clip_max_abs"],
                 module_stats["post_clip_max_abs"],
+                module_stats["pre_clip_exceed_frac"],
+                module_stats["clip_changed_frac"],
+                module_stats["post_clip_saturated_frac"],
                 module_stats["clip_ratio"],
             )
         )
@@ -434,6 +540,7 @@ class TrainingSession:
         first_hd_mae_acc = []
         grad_stats_acc = {}
         grad_norm_type = _resolve_grad_monitor_norm_type(self.cfg)
+        grad_clip_threshold = abs(float(self.cfg.training.grad_clip))
         epoch_start = time.time()
 
         use_tqdm = getattr(self.cfg.training, "use_tqdm", True) and self.hooks.tqdm is not None
@@ -515,13 +622,27 @@ class TrainingSession:
             loss.backward()
             grad_stats = {}
             if should_log_step:
-                pre_clip_grad_stats = _collect_grad_monitor_stats(model, grad_norm_type)
+                pre_clip_grad_stats = _collect_grad_monitor_stats(
+                    model,
+                    grad_norm_type,
+                    grad_clip_threshold,
+                )
+                pre_clip_grad_snapshots = _snapshot_grad_monitor_grads(model)
             _clip_gradients(model, decoder_params, self.cfg)
             if should_log_step:
-                post_clip_grad_stats = _collect_grad_monitor_stats(model, grad_norm_type)
+                post_clip_grad_stats = _collect_grad_monitor_stats(
+                    model,
+                    grad_norm_type,
+                    grad_clip_threshold,
+                )
+                grad_change_stats = _collect_grad_monitor_change_stats(
+                    pre_clip_grad_snapshots,
+                    grad_clip_threshold,
+                )
                 grad_stats = _merge_grad_monitor_stats(
                     pre_clip_grad_stats,
                     post_clip_grad_stats,
+                    grad_change_stats,
                 )
                 _accumulate_grad_monitor_stats(grad_stats_acc, grad_stats)
             optimizer.step()

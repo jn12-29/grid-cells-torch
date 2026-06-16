@@ -42,6 +42,7 @@ from grid_cells.training.session import (
     TrainingSession,
     TrainingSessionHooks,
     _collect_grad_group_stats,
+    _collect_grad_monitor_change_stats,
     _clip_gradients,
     _merge_grad_monitor_stats,
     _resolve_grad_monitor_norm_type,
@@ -284,21 +285,78 @@ def test_grad_monitor_stats_compute_norms_and_clip_ratio():
     skipped = torch.nn.Parameter(torch.zeros(2))
     param.grad = torch.tensor([3.0, 4.0])
 
-    stats = _collect_grad_group_stats([param, skipped], norm_type=2.0)
-    inf_stats = _collect_grad_group_stats([param], norm_type=float("inf"))
+    stats = _collect_grad_group_stats(
+        [param, skipped],
+        norm_type=2.0,
+        clip_threshold=3.5,
+    )
+    inf_stats = _collect_grad_group_stats(
+        [param],
+        norm_type=float("inf"),
+        clip_threshold=3.5,
+    )
     merged = _merge_grad_monitor_stats(
         {"state_init": stats},
-        {"state_init": {"norm": 2.5, "max_abs": 2.0}},
+        {
+            "state_init": {
+                "norm": 2.5,
+                "rms": 1.25,
+                "mean_abs": 1.0,
+                "mean": 0.5,
+                "max_abs": 2.0,
+                "numel": 2.0,
+                "clip_exceed_count": 0.0,
+            }
+        },
+        {
+            "state_init": {
+                "numel": 2.0,
+                "changed_count": 1.0,
+                "post_saturated_count": 1.0,
+            }
+        },
     )
 
-    assert stats == {"norm": 5.0, "max_abs": 4.0}
-    assert inf_stats == {"norm": 4.0, "max_abs": 4.0}
+    assert stats["norm"] == 5.0
+    assert stats["rms"] == pytest.approx(np.sqrt(12.5))
+    assert stats["mean_abs"] == 3.5
+    assert stats["mean"] == 3.5
+    assert stats["max_abs"] == 4.0
+    assert stats["numel"] == 2.0
+    assert stats["clip_exceed_count"] == 1.0
+    assert inf_stats["norm"] == 4.0
+    assert inf_stats["rms"] == pytest.approx(np.sqrt(12.5))
+    assert inf_stats["max_abs"] == 4.0
     assert merged["state_init"]["pre_clip_norm"] == 5.0
     assert merged["state_init"]["post_clip_norm"] == 2.5
+    assert merged["state_init"]["pre_clip_rms"] == pytest.approx(np.sqrt(12.5))
+    assert merged["state_init"]["post_clip_rms"] == 1.25
+    assert merged["state_init"]["pre_clip_mean_abs"] == 3.5
+    assert merged["state_init"]["post_clip_mean_abs"] == 1.0
+    assert merged["state_init"]["pre_clip_mean"] == 3.5
+    assert merged["state_init"]["post_clip_mean"] == 0.5
     assert merged["state_init"]["pre_clip_max_abs"] == 4.0
     assert merged["state_init"]["post_clip_max_abs"] == 2.0
+    assert merged["state_init"]["pre_clip_exceed_frac"] == 0.5
+    assert merged["state_init"]["clip_changed_frac"] == 0.5
+    assert merged["state_init"]["post_clip_saturated_frac"] == 0.5
     assert merged["state_init"]["clip_ratio"] == 0.5
     assert param.grad.tolist() == [3.0, 4.0]
+
+
+def test_grad_monitor_change_stats_counts_changed_and_saturated_elements():
+    param = torch.nn.Parameter(torch.zeros(2))
+    pre_grad = torch.tensor([3.0, 4.0])
+    param.grad = torch.tensor([3.0, 3.5])
+
+    stats = _collect_grad_monitor_change_stats(
+        {"state_init": [(param, pre_grad)]},
+        clip_threshold=3.5,
+    )
+
+    assert stats["state_init"]["numel"] == 2.0
+    assert stats["state_init"]["changed_count"] == 1.0
+    assert stats["state_init"]["post_saturated_count"] == 1.0
 
 
 def test_grad_monitor_norm_type_uses_clip_norm_type_for_norm_mode():
@@ -411,8 +469,17 @@ def test_run_epoch_logs_per_module_grad_monitor_scalars():
     expected_metrics = {
         "pre_clip_norm",
         "post_clip_norm",
+        "pre_clip_rms",
+        "post_clip_rms",
+        "pre_clip_mean_abs",
+        "post_clip_mean_abs",
+        "pre_clip_mean",
+        "post_clip_mean",
         "pre_clip_max_abs",
         "post_clip_max_abs",
+        "pre_clip_exceed_frac",
+        "clip_changed_frac",
+        "post_clip_saturated_frac",
         "clip_ratio",
     }
     clipped_modules = []
@@ -436,9 +503,29 @@ def test_run_epoch_logs_per_module_grad_monitor_scalars():
             clipped_modules.append(module_name)
         assert writer.scalars[post_max_abs_tag][0][0] <= cfg.training.grad_clip + 1e-12
         assert 0.0 <= writer.scalars[ratio_tag][0][0] <= 1.0
+        pre_exceed_frac = writer.scalars[
+            f"train/grad/{module_name}/pre_clip_exceed_frac_step"
+        ][0][0]
+        clip_changed_frac = writer.scalars[
+            f"train/grad/{module_name}/clip_changed_frac_step"
+        ][0][0]
+        post_saturated_frac = writer.scalars[
+            f"train/grad/{module_name}/post_clip_saturated_frac_step"
+        ][0][0]
+        assert 0.0 <= pre_exceed_frac <= 1.0
+        assert 0.0 <= clip_changed_frac <= 1.0
+        assert 0.0 <= post_saturated_frac <= 1.0
+        assert (
+            writer.scalars[f"train/grad/{module_name}/post_clip_rms_step"][0][0]
+            <= writer.scalars[f"train/grad/{module_name}/pre_clip_rms_step"][0][0]
+        )
+        assert (
+            writer.scalars[f"train/grad/{module_name}/post_clip_mean_abs_step"][0][0]
+            <= writer.scalars[f"train/grad/{module_name}/pre_clip_mean_abs_step"][0][0]
+        )
 
     assert clipped_modules
-    assert any("grad sampled_means" in message for message in logger.messages)
+    assert any("pre_exceed" in message for message in logger.messages)
 
 
 def test_resolve_save_dir_appends_timestamp_directory():
