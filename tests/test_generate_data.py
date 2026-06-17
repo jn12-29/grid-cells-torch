@@ -30,6 +30,9 @@ def _make_cfg(train_path: str, eval_path: str = None):
             targets_type="softmax",
             lstm_init_type="softmax",
             decode_type="analytic",
+            pc_target_family="gaussian",
+            pc_target_normalization="global",
+            pc_surround_scale=[2.0],
             n_pc=[8],
             pc_scale=[0.35],
             n_hdc=[6],
@@ -87,6 +90,9 @@ def _make_args(**overrides):
         task__targets_type=None,
         task__lstm_init_type=None,
         task__decode_type=None,
+        task__pc_target_family=None,
+        task__pc_target_normalization=None,
+        task__pc_surround_scale=None,
         visualization__spatial_bins=None,
         visualization__directional_bins=None,
         visualization__anim_num_traj=None,
@@ -121,6 +127,15 @@ def test_generate_dataset_file_writes_npz(tmp_path):
 
     assert output_path.exists()
     assert dataset.num_samples == 6
+    with np.load(output_path, allow_pickle=False) as data:
+        assert set(data.files) == {
+            "init_pos",
+            "init_hd",
+            "ego_vel",
+            "target_pos",
+            "target_hd",
+            "meta",
+        }
 
 
 def test_generate_dataset_file_writes_progress_preview(tmp_path):
@@ -616,6 +631,8 @@ def test_main_directory_mode_writes_effective_metadata(tmp_path, monkeypatch):
     )
     output_dir = tmp_path / "metadata-dir"
     monkeypatch.chdir(tmp_path)
+    cfg.task.n_pc = [8, 9]
+    cfg.task.pc_scale = [0.35, 0.25]
 
     monkeypatch.setattr(generate_data, "load_config", lambda _: cfg)
     monkeypatch.setattr(
@@ -626,6 +643,9 @@ def test_main_directory_mode_writes_effective_metadata(tmp_path, monkeypatch):
             tag="baseline",
             task__seq_len=8,
             task__env_size=3.5,
+            task__pc_target_family="difference_of_gaussians",
+            task__pc_target_normalization="global",
+            task__pc_surround_scale=[2.0],
             data_generation__num_samples=9,
             data_generation__eval_num_samples=2,
         ),
@@ -642,6 +662,9 @@ def test_main_directory_mode_writes_effective_metadata(tmp_path, monkeypatch):
     assert meta["generation"]["eval_seed"] == 6
     assert meta["generation"]["num_samples"] == 9
     assert meta["generation"]["eval_num_samples"] == 2
+    assert meta["cell_code"]["pc_target_family"] == "difference_of_gaussians"
+    assert meta["cell_code"]["pc_target_normalization"] == "global"
+    assert meta["cell_code"]["pc_surround_scale"] == [2.0, 2.0]
     assert meta["paths"]["train"] == "train.npz"
     assert meta["paths"]["eval"] == "eval.npz"
     assert meta["paths"]["cells"] == "cells.npz"

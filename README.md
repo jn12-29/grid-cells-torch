@@ -124,6 +124,8 @@ If `data/latest/train.npz` is missing, `train.py` falls back to on-the-fly traje
 
 `task.targets_type=normalized` uses independent cell-activation targets instead of a population probability distribution; both PC and HDC normalized targets have unit peak activations, train with sigmoid/BCE loss, and decode with sigmoid-activation weighted means. The default and recommended analytic-decoding contract remains `targets_type=softmax`.
 
+`task.pc_target_family` selects the place-cell target family independently from the shared PC/HDC `task.targets_type` mode. `gaussian` preserves the default Gaussian place-cell targets. `difference_of_gaussians` adds the reference-project Difference of Softmaxes / DoS branch when `task.pc_target_normalization=global`; with `none`, it subtracts raw Gaussian responses. `true_difference_of_gaussians` subtracts raw center and surround Gaussian responses. Both DoS and true DoG use `task.pc_surround_scale` as the surround sigma multiplier, shift the difference target to non-negative values, and normalize it across place cells. Analytic position decoding automatically falls back to weighted decoding for non-Gaussian PC target families.
+
 `training.first_pos_loss_multiplier` controls timestep-0 place-cell target-loss weighting without adding a decoded `first_pos_mse` auxiliary loss.
 
 ## 📦 Outputs
@@ -173,6 +175,7 @@ grid-cells-torch/
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
 - `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz`, `<datadir>/eval.npz`, and `<datadir>/cells.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.
 - `task.cells_path` can explicitly point to a fixed `cells.npz`; otherwise training auto-loads `<training.datadir>/cells.npz` when it exists.
+- `task.pc_target_family` is PC-only target encoding; keep DoS/DoG there instead of adding them to shared `task.targets_type`, which also configures HDC targets and loss mode.
 - Explicit file-mode generation is available when you pass `--output` / `--eval_output` paths.
 - Long-lived generation defaults live under `data_generation.*` in `config.yaml`; directory mode owns dataset-local output paths, while `data_generation.*_output` applies to explicit `--output` / `--eval_output` file mode. One-shot run controls such as `--visualize`, `--animate`, `--train_only`, and `--visualize_progress` stay as CLI flags.
 - Layered package boundaries:

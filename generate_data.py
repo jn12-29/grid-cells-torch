@@ -334,8 +334,9 @@ def _build_dataset_metadata(
     num_samples: int,
     eval_num_samples: int | None,
     paths: dict,
+    cell_code: dict | None = None,
 ) -> dict:
-    return {
+    metadata = {
         "dataset_id": dataset_id,
         "tag": _clean_tag(tag),
         "task": {
@@ -352,6 +353,34 @@ def _build_dataset_metadata(
             "eval_num_samples": None if eval_num_samples is None else int(eval_num_samples),
         },
         "paths": _relative_dataset_paths(paths),
+    }
+    if cell_code is not None:
+        metadata["cell_code"] = cell_code
+    return metadata
+
+
+def _cell_code_metadata_from_cfg(cfg) -> dict:
+    """Return target-code provenance for dataset directory metadata."""
+    task_cfg = cfg.task
+    n_pc = len(getattr(task_cfg, "n_pc", []))
+    pc_surround_scale = getattr(task_cfg, "pc_surround_scale", [2.0])
+    if isinstance(pc_surround_scale, (list, tuple)):
+        pc_surround_scale_values = list(pc_surround_scale)
+    else:
+        pc_surround_scale_values = [pc_surround_scale]
+    if len(pc_surround_scale_values) == 1 and n_pc > 1:
+        pc_surround_scale_values = pc_surround_scale_values * n_pc
+    return {
+        "targets_type": getattr(task_cfg, "targets_type", "softmax"),
+        "lstm_init_type": getattr(task_cfg, "lstm_init_type", "softmax"),
+        "decode_type": getattr(task_cfg, "decode_type", "analytic"),
+        "pc_target_family": getattr(task_cfg, "pc_target_family", "gaussian"),
+        "pc_target_normalization": getattr(
+            task_cfg,
+            "pc_target_normalization",
+            "global",
+        ),
+        "pc_surround_scale": [float(value) for value in pc_surround_scale_values],
     }
 
 
@@ -587,6 +616,7 @@ def main() -> None:
                 num_samples=num_samples,
                 eval_num_samples=None,
                 paths=metadata_paths,
+                cell_code=_cell_code_metadata_from_cfg(cfg),
             )
             _write_dataset_metadata(dataset_paths["meta_output"], metadata)
             _write_dataset_readme(dataset_paths["readme_output"], metadata)
@@ -653,6 +683,7 @@ def main() -> None:
             num_samples=num_samples,
             eval_num_samples=eval_num_samples,
             paths=metadata_paths,
+            cell_code=_cell_code_metadata_from_cfg(cfg),
         )
         _write_dataset_metadata(dataset_paths["meta_output"], metadata)
         _write_dataset_readme(dataset_paths["readme_output"], metadata)

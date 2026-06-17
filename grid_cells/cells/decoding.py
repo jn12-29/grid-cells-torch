@@ -73,6 +73,8 @@ def pc_supports_analytic_decode(ensemble: PlaceCellEnsemble) -> bool:
     """Return whether raw place-cell log-scores can be analytically decoded."""
     if _decode_type(ensemble) != "analytic":
         return False
+    if getattr(ensemble, "pc_target_family", "gaussian") != "gaussian":
+        return False
     if getattr(ensemble, "soft_targets", None) != "softmax":
         return False
     variance = _pc_variance_vector_np(ensemble)

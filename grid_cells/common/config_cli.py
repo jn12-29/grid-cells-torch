@@ -16,6 +16,19 @@ CONFIG_OVERRIDE_SPECS = {
         "targets_type": {"type": str},
         "lstm_init_type": {"type": str},
         "decode_type": {"type": str},
+        "pc_target_family": {
+            "type": str,
+            "choices": (
+                "gaussian",
+                "difference_of_gaussians",
+                "true_difference_of_gaussians",
+            ),
+        },
+        "pc_target_normalization": {
+            "type": str,
+            "choices": ("global", "none"),
+        },
+        "pc_surround_scale": {"type": float, "nargs": "+"},
         "velocity_noise": {"type": float, "nargs": "+"},
         "motion_dt": {"type": float},
         "motion_b":  {"type": float},

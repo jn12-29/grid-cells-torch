@@ -62,6 +62,9 @@ def make_cfg():
             targets_type="softmax",
             lstm_init_type="softmax",
             decode_type="analytic",
+            pc_target_family="gaussian",
+            pc_target_normalization="global",
+            pc_surround_scale=[2.0],
             velocity_noise=[0.0, 0.0, 0.0],
             n_pc=[8],
             pc_scale=[0.35],
@@ -1507,6 +1510,12 @@ def test_register_config_overrides_supports_shared_sections():
             "softmax",
             "--task.decode_type",
             "analytic",
+            "--task.pc_target_family",
+            "difference_of_gaussians",
+            "--task.pc_target_normalization",
+            "global",
+            "--task.pc_surround_scale",
+            "2.0",
             "--model.nh_lstm",
             "64",
             "--model.bottleneck_post_activation",
@@ -1578,6 +1587,9 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.task__targets_type == "softmax"
     assert args.task__lstm_init_type == "softmax"
     assert args.task__decode_type == "analytic"
+    assert args.task__pc_target_family == "difference_of_gaussians"
+    assert args.task__pc_target_normalization == "global"
+    assert args.task__pc_surround_scale == [2.0]
     assert args.model__nh_lstm == 64
     assert args.model__bottleneck_post_activation == "relu"
     assert args.training__batch_size == 8
@@ -1626,6 +1638,12 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "data/cells.npz",
             "--task.decode_type",
             "weighted_mean",
+            "--task.pc_target_family",
+            "true_difference_of_gaussians",
+            "--task.pc_target_normalization",
+            "none",
+            "--task.pc_surround_scale",
+            "2.5",
             "--model.dropout_rate",
             "0.25",
             "--model.bottleneck_post_activation",
@@ -1675,6 +1693,9 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.task__env_size == 2.8
     assert args.task__cells_path == "data/cells.npz"
     assert args.task__decode_type == "weighted_mean"
+    assert args.task__pc_target_family == "true_difference_of_gaussians"
+    assert args.task__pc_target_normalization == "none"
+    assert args.task__pc_surround_scale == [2.5]
     assert args.model__dropout_rate == 0.25
     assert args.model__bottleneck_post_activation == "tanh"
     assert args.training__batch_size == 16

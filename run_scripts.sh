@@ -52,29 +52,35 @@ CUDA_VISIBLE_DEVICES=0 python train.py --task.targets_type softmax --task.lstm_i
 
 Note: --task.targets_type normalized uses unit-peak independent activation targets, sigmoid/BCE loss, and sigmoid-activation weighted decoding; softmax remains the recommended analytic-decoding contract.
 
-15. Train with emphasized timestep-0 place-cell target loss
+15. Train with the reference-project DoS place-cell target branch
+CUDA_VISIBLE_DEVICES=0 python train.py --task.pc_target_family difference_of_gaussians --task.pc_target_normalization global --task.pc_surround_scale 2.0
+
+16. Train with the reference-project true DoG place-cell target branch
+CUDA_VISIBLE_DEVICES=0 python train.py --task.pc_target_family true_difference_of_gaussians --task.pc_surround_scale 2.0
+
+17. Train with emphasized timestep-0 place-cell target loss
 CUDA_VISIBLE_DEVICES=0 python train.py --training.first_pos_loss_multiplier 50
 
-16. Train with lighter statistical analysis settings and population scale histogram/GMM plots
+18. Train with lighter statistical analysis settings and population scale histogram/GMM plots
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shuffles 50 --analysis.max_eval_trajectories 64
 
-17. Train with only per-unit Banino-style grid geometry analysis
+19. Train with only per-unit Banino-style grid geometry analysis
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_grid_selectivity false --analysis.compute_grid_geometry true --analysis.compute_shuffle_significance false --analysis.compute_split_half false --analysis.compute_hd_selectivity false
 
-18. Train with the v1 linear spatial-PCA gridness baseline diagnostics
+20. Train with the v1 linear spatial-PCA gridness baseline diagnostics
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_linear_spatial_pca true --analysis.linear_spatial_pca_top_k 16 --analysis.linear_spatial_pca_num_shuffles 20 --analysis.linear_spatial_pca_plot_top_n 16
 
-19. Train while analyzing the model-returned bottleneck without an extra eval transform
+21. Train while analyzing the model-returned bottleneck without an extra eval transform
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.bottleneck_activation raw
 
-20. Train with the step learning-rate scheduler
+22. Train with the step learning-rate scheduler
 CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler step --training.lr_step_size 10 --training.lr_gamma 0.8
 
-21. Train with infinity-norm gradient clipping across all model parameters
+23. Train with infinity-norm gradient clipping across all model parameters
 CUDA_VISIBLE_DEVICES=0 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
 
 Monitor
 
-22. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
+24. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
 tensorboard --logdir results
 EOF

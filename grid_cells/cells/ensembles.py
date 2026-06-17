@@ -18,6 +18,18 @@ import torch
 import torch.nn.functional as F
 
 
+PC_TARGET_FAMILIES = {
+    "gaussian",
+    "difference_of_gaussians",
+    "true_difference_of_gaussians",
+}
+PC_TARGET_NORMALIZATIONS = {"global", "none"}
+PC_DIFFERENCE_TARGET_FAMILIES = {
+    "difference_of_gaussians",
+    "true_difference_of_gaussians",
+}
+
+
 class CellEnsemble(ABC):
     """Base class for cell ensembles (place cells, head direction cells, etc.)."""
 
@@ -87,6 +99,10 @@ class CellEnsemble(ABC):
     def _softmax_sample(self, logits):
         """Sample a one-hot vector from the softmax distribution."""
         probs = CellEnsemble._softmax(logits)
+        return self._sample_probs(probs)
+
+    def _sample_probs(self, probs):
+        """Sample a one-hot vector from normalized probabilities."""
         batch_shape = probs.shape[:-1]
         n = probs.shape[-1]
         flat_probs = probs.reshape(-1, n)
@@ -237,6 +253,9 @@ class PlaceCellEnsemble(CellEnsemble):
         soft_targets="softmax",
         soft_init=None,
         decode_type="analytic",
+        pc_target_family="gaussian",
+        pc_target_normalization="global",
+        surround_scale=2.0,
     ):
         """
         Args:
@@ -248,8 +267,40 @@ class PlaceCellEnsemble(CellEnsemble):
             soft_targets: target encoding mode ("softmax"/"voronoi"/"sample"/"normalized").
             soft_init: init encoding mode; defaults to soft_targets if None.
             decode_type: position decoder mode ("analytic" or "weighted_mean").
+            pc_target_family: place-cell target family
+                ("gaussian"/"difference_of_gaussians"/"true_difference_of_gaussians").
+            pc_target_normalization: DoS normalization mode ("global"/"none");
+                true DoG records the value but subtracts raw Gaussian responses.
+            surround_scale: surround Gaussian sigma multiplier for DoS/DoG targets.
         """
         super().__init__(n_cells, soft_targets, soft_init, decode_type=decode_type)
+        if pc_target_family not in PC_TARGET_FAMILIES:
+            supported = ", ".join(sorted(PC_TARGET_FAMILIES))
+            raise ValueError(
+                f"Unsupported pc_target_family={pc_target_family!r}; "
+                f"expected one of: {supported}."
+            )
+        if pc_target_normalization not in PC_TARGET_NORMALIZATIONS:
+            supported = ", ".join(sorted(PC_TARGET_NORMALIZATIONS))
+            raise ValueError(
+                f"Unsupported pc_target_normalization={pc_target_normalization!r}; "
+                f"expected one of: {supported}."
+            )
+        if surround_scale <= 0.0:
+            raise ValueError("surround_scale must be positive.")
+        if pc_target_family in PC_DIFFERENCE_TARGET_FAMILIES:
+            if n_cells < 2:
+                raise ValueError("DoS/DoG place-cell targets require at least two cells.")
+            if surround_scale <= 1.0:
+                raise ValueError("DoS/DoG place-cell targets require surround_scale > 1.")
+            if soft_targets == "normalized" or self.soft_init == "normalized":
+                raise ValueError(
+                    "DoS/DoG place-cell targets are population distributions and "
+                    "do not support targets_type/lstm_init_type='normalized'."
+                )
+        self.pc_target_family = pc_target_family
+        self.pc_target_normalization = pc_target_normalization
+        self.surround_scale = float(surround_scale)
         self._rng = np.random.RandomState(seed)
         # Cell centres: shape (n_cells, 2)
         self.means = self._rng.uniform(pos_min, pos_max, size=(n_cells, 2)).astype(np.float32)
@@ -269,6 +320,93 @@ class PlaceCellEnsemble(CellEnsemble):
         diff = trajs[:, :, np.newaxis, :] - self.means[np.newaxis, np.newaxis, :, :]
         # Sum over the spatial dimension (dim 2 of diff, i.e. x and y)
         return -0.5 * np.sum(diff ** 2 / self.variances[np.newaxis, np.newaxis, :, :], axis=-1)
+
+    def _surround_logpdf(self, trajs):
+        """Un-normalised log PDF for the wider surround Gaussian."""
+        diff = trajs[:, :, np.newaxis, :] - self.means[np.newaxis, np.newaxis, :, :]
+        surround_variances = self.variances * (self.surround_scale ** 2)
+        return -0.5 * np.sum(
+            diff ** 2 / surround_variances[np.newaxis, np.newaxis, :, :],
+            axis=-1,
+        )
+
+    @staticmethod
+    def _shift_and_normalize(values):
+        """Shift difference targets to non-negative population probabilities."""
+        if not np.isfinite(values).all():
+            raise ValueError("DoS/DoG target values must be finite.")
+        shifted = values + np.abs(np.min(values, axis=-1, keepdims=True))
+        denom = np.sum(shifted, axis=-1, keepdims=True)
+        zero_denom = denom <= 0.0
+        if np.any(zero_denom):
+            shifted = np.where(zero_denom, np.ones_like(shifted), shifted)
+            denom = np.where(zero_denom, float(shifted.shape[-1]), denom)
+        return shifted / denom
+
+    def _normalized_center_response(self, logpdf):
+        if self.pc_target_normalization == "none":
+            return np.exp(logpdf)
+        if self.pc_target_normalization == "global":
+            return self._softmax(logpdf)
+        raise ValueError(
+            f"Unsupported pc_target_normalization={self.pc_target_normalization!r}."
+        )
+
+    @staticmethod
+    def _raw_gaussian_difference(center_logpdf, surround_logpdf):
+        """Return a numerically stable raw center-minus-surround response."""
+        max_logpdf = np.maximum(center_logpdf, surround_logpdf).max(
+            axis=-1,
+            keepdims=True,
+        )
+        center = np.exp(center_logpdf - max_logpdf)
+        surround = np.exp(surround_logpdf - max_logpdf)
+        return center - surround
+
+    def _difference_targets(self, trajs):
+        center_logpdf = self.unnor_logpdf(trajs)
+        surround_logpdf = self._surround_logpdf(trajs)
+
+        if self.pc_target_family == "difference_of_gaussians":
+            if self.pc_target_normalization == "none":
+                return self._shift_and_normalize(
+                    self._raw_gaussian_difference(center_logpdf, surround_logpdf)
+                )
+            elif self.pc_target_normalization == "global":
+                center = self._normalized_center_response(center_logpdf)
+                surround = self._softmax(surround_logpdf)
+            else:
+                raise ValueError(
+                    f"Unsupported pc_target_normalization={self.pc_target_normalization!r}."
+                )
+            return self._shift_and_normalize(center - surround)
+
+        if self.pc_target_family == "true_difference_of_gaussians":
+            return self._shift_and_normalize(
+                self._raw_gaussian_difference(center_logpdf, surround_logpdf)
+            )
+
+        raise ValueError(f"Unsupported difference target family: {self.pc_target_family!r}")
+
+    def _apply_mode(self, x, mode):
+        """Compute place-cell activations for the configured target family."""
+        if self.pc_target_family == "gaussian":
+            return super()._apply_mode(x, mode)
+
+        if mode == "zeros":
+            batch, seq = x.shape[0], x.shape[1]
+            return np.zeros((batch, seq, self.n_cells), dtype=np.float32)
+        if mode == "normalized":
+            raise ValueError("DoS/DoG place-cell targets do not support normalized mode.")
+
+        targets = self._difference_targets(x)
+        if mode == "softmax":
+            return targets.astype(np.float32)
+        if mode == "sample":
+            return self._sample_probs(targets).astype(np.float32)
+        if mode == "voronoi":
+            return self._one_hot_max(targets).astype(np.float32)
+        raise ValueError(f"Unknown mode: {mode!r}")
 
 
 # ---------------------------------------------------------------------------

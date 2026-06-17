@@ -25,7 +25,227 @@ from grid_cells.cells.encoding_utils import (
 from grid_cells.cells.decoding import (
     decode_head_direction_from_hdc_scores,
     decode_position_from_pc_scores,
+    pc_supports_analytic_decode,
 )
+
+
+def _manual_softmax(values):
+    shifted = values - values.max(axis=-1, keepdims=True)
+    exp_values = np.exp(shifted)
+    return exp_values / exp_values.sum(axis=-1, keepdims=True)
+
+
+def _manual_shift_and_normalize(values):
+    shifted = values + np.abs(values.min(axis=-1, keepdims=True))
+    return shifted / shifted.sum(axis=-1, keepdims=True)
+
+
+def _manual_surround_logpdf(positions, ensemble):
+    diff = positions[:, :, np.newaxis, :] - ensemble.means[np.newaxis, np.newaxis, :, :]
+    variances = ensemble.variances * (ensemble.surround_scale ** 2)
+    return -0.5 * np.sum(diff ** 2 / variances[np.newaxis, np.newaxis, :, :], axis=-1)
+
+
+def test_difference_of_gaussians_global_matches_reference_dos_formula():
+    """DoS targets should subtract center and surround softmax distributions."""
+    ensemble = PlaceCellEnsemble(
+        3,
+        stdev=0.4,
+        pos_min=-1.0,
+        pos_max=1.0,
+        seed=0,
+        pc_target_family="difference_of_gaussians",
+        pc_target_normalization="global",
+        surround_scale=2.0,
+    )
+    ensemble.means = np.array(
+        [[-0.5, 0.0], [0.3, 0.1], [0.7, -0.4]],
+        dtype=np.float32,
+    )
+    positions = np.array([[[0.0, 0.0], [0.4, -0.2]]], dtype=np.float32)
+
+    targets = ensemble.get_targets(positions)
+    center = _manual_softmax(ensemble.unnor_logpdf(positions))
+    surround = _manual_softmax(_manual_surround_logpdf(positions, ensemble))
+    expected = _manual_shift_and_normalize(center - surround)
+
+    assert np.allclose(targets, expected, atol=1e-7)
+    assert np.all(targets >= 0.0)
+    assert np.allclose(targets.sum(axis=-1), 1.0)
+
+
+def test_difference_of_gaussians_none_subtracts_raw_gaussian_responses():
+    """The none DoS branch should subtract raw center and surround Gaussians."""
+    ensemble = PlaceCellEnsemble(
+        3,
+        stdev=0.4,
+        pos_min=-1.0,
+        pos_max=1.0,
+        seed=0,
+        pc_target_family="difference_of_gaussians",
+        pc_target_normalization="none",
+        surround_scale=2.0,
+    )
+    ensemble.means = np.array(
+        [[-0.5, 0.0], [0.3, 0.1], [0.7, -0.4]],
+        dtype=np.float32,
+    )
+    positions = np.array([[[0.0, 0.0], [0.4, -0.2]]], dtype=np.float32)
+
+    targets = ensemble.get_targets(positions)
+    center = np.exp(ensemble.unnor_logpdf(positions))
+    surround = np.exp(_manual_surround_logpdf(positions, ensemble))
+    expected = _manual_shift_and_normalize(center - surround)
+
+    assert np.allclose(targets, expected, atol=1e-7)
+    assert np.all(targets >= 0.0)
+    assert np.allclose(targets.sum(axis=-1), 1.0)
+
+
+def test_true_difference_of_gaussians_subtracts_raw_gaussian_responses():
+    """True DoG targets should ignore softmax normalization in the difference."""
+    positions = np.array([[[0.0, 0.0], [0.4, -0.2]]], dtype=np.float32)
+    targets_by_normalization = []
+
+    for normalization in ("global", "none"):
+        ensemble = PlaceCellEnsemble(
+            3,
+            stdev=0.4,
+            pos_min=-1.0,
+            pos_max=1.0,
+            seed=0,
+            pc_target_family="true_difference_of_gaussians",
+            pc_target_normalization=normalization,
+            surround_scale=2.0,
+        )
+        ensemble.means = np.array(
+            [[-0.5, 0.0], [0.3, 0.1], [0.7, -0.4]],
+            dtype=np.float32,
+        )
+        targets = ensemble.get_targets(positions)
+        center = np.exp(ensemble.unnor_logpdf(positions))
+        surround = np.exp(_manual_surround_logpdf(positions, ensemble))
+        expected = _manual_shift_and_normalize(center - surround)
+        assert np.allclose(targets, expected, atol=1e-7)
+        targets_by_normalization.append(targets)
+
+    assert np.allclose(targets_by_normalization[0], targets_by_normalization[1])
+
+
+@pytest.mark.parametrize(
+    ("target_family", "normalization"),
+    [
+        ("true_difference_of_gaussians", "global"),
+        ("difference_of_gaussians", "none"),
+    ],
+)
+def test_raw_difference_targets_avoid_gaussian_underflow(target_family, normalization):
+    """Raw DoG branches should stay finite when unscaled Gaussian exp underflows."""
+    ensemble = PlaceCellEnsemble(
+        4,
+        stdev=0.01,
+        pos_min=-1.1,
+        pos_max=1.1,
+        seed=0,
+        pc_target_family=target_family,
+        pc_target_normalization=normalization,
+        surround_scale=2.0,
+    )
+    ensemble.means = np.array(
+        [[1.0, 1.0], [-1.0, 0.9], [0.6, -1.2], [-0.8, -0.7]],
+        dtype=np.float32,
+    )
+    positions = np.array([[[0.0, 0.0], [0.1, -0.1]]], dtype=np.float32)
+
+    assert np.count_nonzero(np.exp(ensemble.unnor_logpdf(positions))) == 0
+    assert np.count_nonzero(np.exp(_manual_surround_logpdf(positions, ensemble))) == 0
+
+    targets = ensemble.get_targets(positions)
+
+    assert np.isfinite(targets).all()
+    assert np.all(targets >= 0.0)
+    assert np.allclose(targets.sum(axis=-1), 1.0)
+
+
+@pytest.mark.parametrize(
+    ("target_family", "normalization"),
+    [
+        ("difference_of_gaussians", "global"),
+        ("difference_of_gaussians", "none"),
+        ("true_difference_of_gaussians", "global"),
+    ],
+)
+def test_difference_targets_use_uniform_for_equal_difference_responses(
+    target_family,
+    normalization,
+):
+    """Equal DoS/DoG difference responses should produce a neutral target."""
+    ensemble = PlaceCellEnsemble(
+        2,
+        stdev=0.4,
+        pos_min=-1.0,
+        pos_max=1.0,
+        seed=0,
+        pc_target_family=target_family,
+        pc_target_normalization=normalization,
+        surround_scale=2.0,
+    )
+    ensemble.means = np.array([[-1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
+    positions = np.array([[[0.0, 0.0]]], dtype=np.float32)
+
+    targets = ensemble.get_targets(positions)
+
+    assert np.isfinite(targets).all()
+    assert np.all(targets >= 0.0)
+    assert np.allclose(targets, np.array([[[0.5, 0.5]]], dtype=np.float32))
+    assert np.allclose(targets.sum(axis=-1), 1.0)
+
+
+def test_difference_target_normalization_rejects_non_finite_values():
+    """DoS/DoG target normalization should not hide NaN or infinite values."""
+    values = np.array([[[0.0, np.nan], [0.0, np.inf]]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="finite"):
+        PlaceCellEnsemble._shift_and_normalize(values)
+
+
+def test_difference_targets_reject_normalized_mode():
+    """DoS/DoG targets are population distributions, not independent BCE labels."""
+    with pytest.raises(ValueError, match="normalized"):
+        PlaceCellEnsemble(
+            3,
+            stdev=0.4,
+            pos_min=-1.0,
+            pos_max=1.0,
+            seed=0,
+            soft_targets="normalized",
+            pc_target_family="difference_of_gaussians",
+            surround_scale=2.0,
+        )
+
+
+def test_difference_targets_fall_back_to_weighted_position_decoding():
+    """DoS/DoG logits should not be treated as Gaussian analytic codes."""
+    ensemble = PlaceCellEnsemble(
+        3,
+        stdev=0.4,
+        pos_min=-1.0,
+        pos_max=1.0,
+        seed=0,
+        pc_target_family="difference_of_gaussians",
+        surround_scale=2.0,
+    )
+    ensemble.means = np.array(
+        [[-1.0, 0.0], [0.0, 0.5], [1.0, 0.0]],
+        dtype=np.float32,
+    )
+    logits = torch.tensor([[[2.0, -1.0, 0.5]]], dtype=torch.float32)
+
+    assert not pc_supports_analytic_decode(ensemble)
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+    expected = torch.softmax(logits, dim=-1) @ torch.from_numpy(ensemble.means)
+
+    assert torch.allclose(decoded, expected, atol=1e-6)
 
 
 def test_decode_position_from_pc_logits_returns_weighted_mean():

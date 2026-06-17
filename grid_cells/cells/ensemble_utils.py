@@ -10,9 +10,33 @@ from grid_cells.cells.persistence import (
 )
 
 
+def _broadcast_ensemble_values(values, count: int, field_name: str, cast):
+    """Return one config value per ensemble, accepting a scalar or a singleton list."""
+    if isinstance(values, (list, tuple)):
+        resolved = list(values)
+    else:
+        resolved = [values]
+    if len(resolved) == 1 and count != 1:
+        resolved = resolved * count
+    if len(resolved) != count:
+        raise ValueError(
+            f"{field_name} must have length 1 or match task.n_pc length "
+            f"({count}), got {len(resolved)}."
+        )
+    return [cast(value) for value in resolved]
+
+
 def _create_place_cell_ensembles(cfg) -> List[PlaceCellEnsemble]:
     """Create place-cell ensembles from config without loading persisted centers."""
     task_cfg = cfg.task
+    pc_surround_scale = _broadcast_ensemble_values(
+        getattr(task_cfg, "pc_surround_scale", 2.0),
+        len(task_cfg.n_pc),
+        "task.pc_surround_scale",
+        float,
+    )
+    pc_target_family = getattr(task_cfg, "pc_target_family", "gaussian")
+    pc_target_normalization = getattr(task_cfg, "pc_target_normalization", "global")
     return [
         PlaceCellEnsemble(
             n_cells,
@@ -23,8 +47,15 @@ def _create_place_cell_ensembles(cfg) -> List[PlaceCellEnsemble]:
             soft_targets=task_cfg.targets_type,
             soft_init=task_cfg.lstm_init_type,
             decode_type=getattr(task_cfg, "decode_type", "analytic"),
+            pc_target_family=pc_target_family,
+            pc_target_normalization=pc_target_normalization,
+            surround_scale=surround_scale,
         )
-        for n_cells, scale in zip(task_cfg.n_pc, task_cfg.pc_scale)
+        for n_cells, scale, surround_scale in zip(
+            task_cfg.n_pc,
+            task_cfg.pc_scale,
+            pc_surround_scale,
+        )
     ]
 
 

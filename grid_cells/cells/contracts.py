@@ -71,8 +71,32 @@ def validate_cell_code_contract(
             "condition information.",
         )
 
+    non_gaussian_pc_families = set()
+    if pc_ensembles is not None:
+        non_gaussian_pc_families = {
+            getattr(ensemble, "pc_target_family", "gaussian")
+            for ensemble in pc_ensembles
+            if getattr(ensemble, "pc_target_family", "gaussian") != "gaussian"
+        }
+    else:
+        pc_target_family = getattr(task_cfg, "pc_target_family", "gaussian")
+        if pc_target_family != "gaussian":
+            non_gaussian_pc_families.add(pc_target_family)
+
+    if non_gaussian_pc_families:
+        family_text = ", ".join(sorted(non_gaussian_pc_families))
+        _warn_once(
+            logger,
+            f"decode-pc-family-{family_text}",
+            "Analytic PC decoding is exact only for Gaussian place-cell target "
+            "families. Current task.pc_target_family includes "
+            f"{family_text!r}; decoded position metrics will use approximate "
+            "weighted decoding for those PC ensembles.",
+        )
+
     if pc_ensembles is not None and any(
         getattr(ensemble, "soft_targets", None) == "softmax"
+        and getattr(ensemble, "pc_target_family", "gaussian") == "gaussian"
         and not pc_supports_scale_invariant_decode(ensemble)
         for ensemble in pc_ensembles
     ):

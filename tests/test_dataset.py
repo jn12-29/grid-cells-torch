@@ -66,6 +66,31 @@ def test_attach_ensembles_adds_targets():
     assert item["hdc_targets_0"].shape == (10, 4)    # (seq_len, n_hdc)
 
 
+def test_attach_ensembles_encodes_difference_place_cell_targets():
+    """Attached datasets should lazily encode DoS place-cell targets."""
+    ds = TrajectoryDataset(num_samples=5, seq_len=10, env_size=2.2, seed=1)
+    pc_ens = [
+        PlaceCellEnsemble(
+            8,
+            stdev=0.35,
+            pos_min=-1.1,
+            pos_max=1.1,
+            seed=0,
+            pc_target_family="difference_of_gaussians",
+            pc_target_normalization="global",
+            surround_scale=2.0,
+        )
+    ]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    ds.attach_ensembles(pc_ens, hdc_ens)
+
+    item = ds[0]
+
+    assert item["pc_targets_0"].shape == (10, 8)
+    assert np.all(item["pc_targets_0"] >= 0.0)
+    assert np.allclose(item["pc_targets_0"].sum(axis=-1), 1.0)
+
+
 def test_without_attach_no_encoded_keys():
     """Without attach_ensembles, __getitem__ returns raw trajectory only."""
     ds = TrajectoryDataset(num_samples=5, seq_len=10, env_size=2.2, seed=1)

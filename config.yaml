@@ -2,6 +2,9 @@ task:
   env_size: 2.2 # environment size in meters
   n_pc: [256] # list of place cell counts (one ensemble per entry)
   pc_scale: [0.01] # place cell Gaussian std dev in meters (one value per ensemble)
+  pc_target_family: "gaussian" # PC target family: "gaussian"/"difference_of_gaussians"/"true_difference_of_gaussians"
+  pc_target_normalization: "global" # DoS normalization: "global" subtracts softmaxes, "none" subtracts raw Gaussian responses
+  pc_surround_scale: [2.0] # surround sigma multiplier for DoS/DoG targets (one value or one per PC ensemble)
   n_hdc: [12] # head direction cell count (one ensemble per entry)
   hdc_concentration: [20.0] # Von Mises concentration κ (higher = narrower tuning)
   seq_len: 1000 # trajectory sequence length (timesteps per sample)
