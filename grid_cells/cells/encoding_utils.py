@@ -10,6 +10,7 @@ from grid_cells.cells.decoding import (
     compute_position_mse,
     decode_head_direction_from_hdc_logits,
     decode_position_from_pc_activations,
+    decode_position_from_pc_activations_top_k,
     decode_position_from_pc_logits,
 )
 from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble

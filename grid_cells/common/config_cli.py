@@ -16,6 +16,7 @@ CONFIG_OVERRIDE_SPECS = {
         "targets_type": {"type": str},
         "lstm_init_type": {"type": str},
         "decode_type": {"type": str},
+        "decode_top_k": {"type": int},
         "pc_target_family": {
             "type": str,
             "choices": (

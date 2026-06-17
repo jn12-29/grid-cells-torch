@@ -374,6 +374,7 @@ def _cell_code_metadata_from_cfg(cfg) -> dict:
         "targets_type": getattr(task_cfg, "targets_type", "softmax"),
         "lstm_init_type": getattr(task_cfg, "lstm_init_type", "softmax"),
         "decode_type": getattr(task_cfg, "decode_type", "analytic"),
+        "decode_top_k": getattr(task_cfg, "decode_top_k", 3),
         "pc_target_family": getattr(task_cfg, "pc_target_family", "gaussian"),
         "pc_target_normalization": getattr(
             task_cfg,

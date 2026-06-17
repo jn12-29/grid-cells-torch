@@ -30,6 +30,7 @@ def _make_cfg(train_path: str, eval_path: str = None):
             targets_type="softmax",
             lstm_init_type="softmax",
             decode_type="analytic",
+            decode_top_k=3,
             pc_target_family="gaussian",
             pc_target_normalization="global",
             pc_surround_scale=[2.0],
@@ -90,6 +91,7 @@ def _make_args(**overrides):
         task__targets_type=None,
         task__lstm_init_type=None,
         task__decode_type=None,
+        task__decode_top_k=None,
         task__pc_target_family=None,
         task__pc_target_normalization=None,
         task__pc_surround_scale=None,
@@ -665,6 +667,7 @@ def test_main_directory_mode_writes_effective_metadata(tmp_path, monkeypatch):
     assert meta["cell_code"]["pc_target_family"] == "difference_of_gaussians"
     assert meta["cell_code"]["pc_target_normalization"] == "global"
     assert meta["cell_code"]["pc_surround_scale"] == [2.0, 2.0]
+    assert meta["cell_code"]["decode_top_k"] == 3
     assert meta["paths"]["train"] == "train.npz"
     assert meta["paths"]["eval"] == "eval.npz"
     assert meta["paths"]["cells"] == "cells.npz"

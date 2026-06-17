@@ -6,6 +6,11 @@ from types import SimpleNamespace
 import yaml
 
 
+OPTIONAL_CONFIG_DEFAULTS = {
+    ("task", "decode_top_k"): 3,
+}
+
+
 def dict_to_namespace(data: dict) -> SimpleNamespace:
     """Recursively convert dicts to nested namespaces."""
     namespace = SimpleNamespace()
@@ -29,6 +34,15 @@ def namespace_to_dict(obj):
     return obj
 
 
+def apply_config_defaults(cfg: SimpleNamespace) -> SimpleNamespace:
+    """Populate defaults for config fields added after older config files."""
+    for (section, attr), value in OPTIONAL_CONFIG_DEFAULTS.items():
+        target = getattr(cfg, section, None)
+        if target is not None and not hasattr(target, attr):
+            setattr(target, attr, value)
+    return cfg
+
+
 def str2bool(value):
     """Parse common textual boolean values for CLI overrides."""
     if isinstance(value, bool):
@@ -46,7 +60,7 @@ def load_config(path: str = "config.yaml") -> SimpleNamespace:
     """Load YAML config and return it as a nested namespace."""
     with open(path, "r") as handle:
         raw = yaml.safe_load(handle)
-    return dict_to_namespace(raw)
+    return apply_config_defaults(dict_to_namespace(raw))
 
 
 def save_config(cfg: SimpleNamespace, path: str) -> None:
@@ -71,6 +85,9 @@ def apply_namespace_overrides(
         if target is None:
             raise AttributeError(f"Unknown config section: {section}")
         if not hasattr(target, attr):
-            raise AttributeError(f"Unknown config field: {section}.{attr}")
+            default = OPTIONAL_CONFIG_DEFAULTS.get((section, attr))
+            if default is None:
+                raise AttributeError(f"Unknown config field: {section}.{attr}")
+            setattr(target, attr, default)
         setattr(target, attr, value)
     return cfg

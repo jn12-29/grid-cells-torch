@@ -128,7 +128,7 @@ tensorboard --logdir results
 
 `task.targets_type=normalized` 使用独立 cell-activation target，而不是 population probability distribution；PC 和 HDC 的 normalized target 都以 1 作为峰值，使用 sigmoid/BCE loss 训练，并用 sigmoid activation weighted mean 解码。默认且推荐的解析解码合同仍是 `targets_type=softmax`。
 
-`task.pc_target_family` 独立选择 place-cell target family，不改变 PC/HDC 共享的 `task.targets_type` mode。`gaussian` 保持默认 Gaussian place-cell target。`difference_of_gaussians` 在 `task.pc_target_normalization=global` 时对应参考项目的 Difference of Softmaxes / DoS；设为 `none` 时相减 raw Gaussian response。`true_difference_of_gaussians` 直接相减 center 和 surround 的 raw Gaussian response。DoS 和 true DoG 都用 `task.pc_surround_scale` 作为 surround sigma multiplier，相减后平移到非负并按 place cell 维度归一化。非 Gaussian PC target family 会让 analytic 位置解码自动回退到 weighted decoding。
+`task.pc_target_family` 独立选择 place-cell target family，不改变 PC/HDC 共享的 `task.targets_type` mode。`gaussian` 保持默认 Gaussian place-cell target。`difference_of_gaussians` 在 `task.pc_target_normalization=global` 时对应参考项目的 Difference of Softmaxes / DoS；设为 `none` 时相减 raw Gaussian response。`true_difference_of_gaussians` 直接相减 center 和 surround 的 raw Gaussian response。DoS 和 true DoG 都用 `task.pc_surround_scale` 作为 surround sigma multiplier，相减后平移到非负并按 place cell 维度归一化。非 Gaussian PC target family 会让 analytic 位置解码自动回退到 weighted decoding。做 No-Free-Lunch 风格 DoS/DoG 检查和 dataset animation 时，可设置 `task.decode_type=top_k`；`task.decode_top_k` 控制单 field center voting 的投票数量，默认 3，`true_difference_of_gaussians` 按最低 activation 投票，其他 family 按最高 activation 投票。
 
 `training.first_pos_loss_multiplier` 控制 timestep-0 place-cell target loss 权重，但不会额外加入 decoded `first_pos_mse` auxiliary loss。
 
@@ -179,7 +179,7 @@ grid-cells-torch/
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。
 - `train.py --training.datadir data/datasets/<dataset-id>` 会优先加载 `<datadir>/train.npz`、`<datadir>/eval.npz` 和 `<datadir>/cells.npz`，再回退到 legacy 的 `training.data_path` 与 `training.eval_data_path` 字段。
 - `task.cells_path` 可以显式指定固定的 `cells.npz`；否则训练会在存在时自动加载 `<training.datadir>/cells.npz`。
-- `task.pc_target_family` 是 PC-only target encoding；DoS/DoG 应放在这里，不要加入共享的 `task.targets_type`，因为后者也配置 HDC targets 和 loss mode。
+- `task.pc_target_family` 是 PC-only target encoding；DoS/DoG 应放在这里，不要加入共享的 `task.targets_type`，因为后者也配置 HDC targets 和 loss mode。需要 No-Free-Lunch 风格 center voting 而不是 DoS/DoG weighted-mean 位置解码时，使用 `task.decode_type=top_k` 和 `task.decode_top_k`。
 - 显式传入 `--output` / `--eval_output` 时，可以使用文件模式生成。
 - 长期复用的数据生成默认值放在 `config.yaml` 的 `data_generation.*` 下；目录模式使用数据集目录内的固定输出路径，`data_generation.*_output` 只用于显式 `--output` / `--eval_output` 文件模式。`--visualize`、`--animate`、`--train_only`、`--visualize_progress` 这类一次性运行开关继续保留在 CLI。
 - 分层包边界如下：

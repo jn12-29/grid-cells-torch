@@ -10,6 +10,7 @@ Usage:
 """
 
 import logging
+from numbers import Integral
 
 from grid_cells.cells.decoding import (
     VALID_DECODE_TYPES,
@@ -48,10 +49,26 @@ def validate_cell_code_contract(
             f"Unsupported task.decode_type={decode_type!r}; expected one of: {supported}."
         )
 
-    if decode_type != "analytic":
+    decode_top_k_value = getattr(task_cfg, "decode_top_k", 3)
+    if isinstance(decode_top_k_value, bool) or not isinstance(decode_top_k_value, Integral):
+        raise ValueError(
+            f"task.decode_top_k must be an integer, got {decode_top_k_value!r}."
+        )
+    decode_top_k = int(decode_top_k_value)
+    if decode_type == "top_k" and decode_top_k <= 0:
+        raise ValueError(f"task.decode_top_k must be positive, got {decode_top_k}.")
+    if decode_type == "top_k" and pc_ensembles is not None:
+        for ensemble in pc_ensembles:
+            if decode_top_k > int(getattr(ensemble, "n_cells", 0)):
+                raise ValueError(
+                    "task.decode_top_k must be <= the number of cells in every PC "
+                    f"ensemble, got {decode_top_k} for n_pc={ensemble.n_cells}."
+                )
+
+    if decode_type == "weighted_mean":
         return
 
-    if targets_type != "softmax":
+    if decode_type == "analytic" and targets_type != "softmax":
         _warn_once(
             logger,
             f"decode-targets-{targets_type}",
@@ -61,7 +78,7 @@ def validate_cell_code_contract(
             "approximate weighted decoding where needed.",
         )
 
-    if lstm_init_type != "softmax":
+    if decode_type == "analytic" and lstm_init_type != "softmax":
         _warn_once(
             logger,
             f"decode-init-{lstm_init_type}",
@@ -83,7 +100,7 @@ def validate_cell_code_contract(
         if pc_target_family != "gaussian":
             non_gaussian_pc_families.add(pc_target_family)
 
-    if non_gaussian_pc_families:
+    if decode_type == "analytic" and non_gaussian_pc_families:
         family_text = ", ".join(sorted(non_gaussian_pc_families))
         _warn_once(
             logger,
@@ -94,7 +111,7 @@ def validate_cell_code_contract(
             "weighted decoding for those PC ensembles.",
         )
 
-    if pc_ensembles is not None and any(
+    if decode_type == "analytic" and pc_ensembles is not None and any(
         getattr(ensemble, "soft_targets", None) == "softmax"
         and getattr(ensemble, "pc_target_family", "gaussian") == "gaussian"
         and not pc_supports_scale_invariant_decode(ensemble)

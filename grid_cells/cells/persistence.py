@@ -62,7 +62,6 @@ def _strict_metadata_subset(meta: dict) -> dict:
         for key in (
             "env_size",
             "n_pc",
-            "pc_scale",
             "n_hdc",
             "hdc_concentration",
         )

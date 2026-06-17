@@ -19,8 +19,9 @@ import torch.nn.functional as F
 from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
 
 
-VALID_DECODE_TYPES = {"analytic", "weighted_mean"}
+VALID_DECODE_TYPES = {"analytic", "top_k", "weighted_mean"}
 PC_ANALYTIC_MAX_RELATIVE_RESIDUAL = 0.05
+DEFAULT_DECODE_TOP_K = 3
 
 
 def _as_list(values):
@@ -51,6 +52,34 @@ def logits_to_cell_activations(logits: torch.Tensor, ensemble) -> torch.Tensor:
     if getattr(ensemble, "soft_targets", None) == "normalized":
         return torch.sigmoid(logits)
     return F.softmax(logits, dim=-1)
+
+
+def _decode_top_k(ensemble) -> int:
+    """Resolve and validate the ensemble top-k decoder vote count."""
+    top_k = _normalize_decode_top_k(getattr(ensemble, "decode_top_k", DEFAULT_DECODE_TOP_K))
+    n_cells = int(getattr(ensemble, "n_cells", 0))
+    _validate_decode_top_k(top_k, n_cells)
+    return top_k
+
+
+def _normalize_decode_top_k(k) -> int:
+    if isinstance(k, bool) or not isinstance(k, (int, np.integer)):
+        raise ValueError(f"decode_top_k must be an integer, got {k!r}.")
+    return int(k)
+
+
+def _validate_decode_top_k(k: int, n_cells: int) -> None:
+    if k <= 0:
+        raise ValueError(f"decode_top_k must be positive, got {k}.")
+    if k > n_cells:
+        raise ValueError(
+            f"decode_top_k must be <= number of place cells ({n_cells}), got {k}."
+        )
+
+
+def _uses_lowest_top_k(ensemble) -> bool:
+    """Return whether the ensemble follows NFL true-DoG lowest-activation voting."""
+    return getattr(ensemble, "pc_target_family", "gaussian") == "true_difference_of_gaussians"
 
 
 def _decode_weights_from_logits(logits: torch.Tensor, ensemble) -> torch.Tensor:
@@ -187,6 +216,27 @@ def _decode_position_logits_weighted_one_torch(
     return torch.matmul(probs, means)
 
 
+def _decode_position_activations_top_k_one_torch(
+    activations: torch.Tensor,
+    ensemble: PlaceCellEnsemble,
+) -> torch.Tensor:
+    if activations.shape[-1] != ensemble.n_cells:
+        raise ValueError("PC activations and ensemble must agree on the number of cells.")
+    k = _decode_top_k(ensemble)
+    scores = -activations if _uses_lowest_top_k(ensemble) else activations
+    _, indices = torch.topk(scores, k=k, dim=-1)
+    means = torch.as_tensor(ensemble.means, dtype=activations.dtype, device=activations.device)
+    return means[indices].mean(dim=-2)
+
+
+def _decode_position_logits_top_k_one_torch(
+    logits: torch.Tensor,
+    ensemble: PlaceCellEnsemble,
+) -> torch.Tensor:
+    activations = logits_to_cell_activations(logits, ensemble)
+    return _decode_position_activations_top_k_one_torch(activations, ensemble)
+
+
 def decode_position_from_pc_scores(
     pc_scores,
     pc_ensembles: PlaceCellEnsemble | Sequence[PlaceCellEnsemble],
@@ -224,7 +274,10 @@ def decode_position_from_pc_logits(
 
     decoded_positions = []
     for logits, ensemble in zip(pc_logits, pc_ensembles):
-        if pc_supports_scale_invariant_decode(ensemble):
+        decode_type = _decode_type(ensemble)
+        if decode_type == "top_k":
+            decoded_positions.append(_decode_position_logits_top_k_one_torch(logits, ensemble))
+        elif pc_supports_scale_invariant_decode(ensemble):
             decoded_positions.append(_decode_position_logits_one_torch(logits, ensemble))
         else:
             decoded_positions.append(_decode_position_logits_weighted_one_torch(logits, ensemble))
@@ -248,6 +301,30 @@ def decode_position_from_pc_activations(
     denom = np.where(denom > 0.0, denom, np.ones_like(denom))
     weights = pc_acts / denom
     return np.tensordot(weights, pc_centers, axes=([-1], [0])).astype(np.float32)
+
+
+def decode_position_from_pc_activations_top_k(
+    pc_acts: np.ndarray,
+    pc_centers: np.ndarray,
+    k: int = DEFAULT_DECODE_TOP_K,
+    *,
+    lowest: bool = False,
+) -> np.ndarray:
+    """Decode positions from the mean centers of the top-k active place cells."""
+    pc_acts = np.asarray(pc_acts, dtype=np.float32)
+    pc_centers = np.asarray(pc_centers, dtype=np.float32)
+    if pc_acts.ndim < 2:
+        raise ValueError("pc_acts must include a cell dimension.")
+    if pc_centers.ndim != 2 or pc_centers.shape[1] != 2:
+        raise ValueError("pc_centers must have shape (n_pc, 2).")
+    if pc_acts.shape[-1] != pc_centers.shape[0]:
+        raise ValueError("pc_acts and pc_centers must agree on the number of place cells.")
+    k = _normalize_decode_top_k(k)
+    _validate_decode_top_k(k, pc_centers.shape[0])
+    scores = -pc_acts if lowest else pc_acts
+    indices = np.argpartition(scores, -k, axis=-1)[..., -k:]
+    voting_centers = pc_centers[indices]
+    return voting_centers.mean(axis=-2).astype(np.float32)
 
 
 def _hdc_linear_terms_np(

@@ -18,7 +18,9 @@ import torch
 
 from grid_cells.cells.decoding import (
     decode_position_from_pc_activations,
+    decode_position_from_pc_activations_top_k,
     decode_position_from_pc_scores,
+    is_supported_decode_type,
     pc_supports_analytic_decode,
 )
 from grid_cells.cells.ensembles import HeadDirectionCellEnsemble, PlaceCellEnsemble
@@ -154,14 +156,28 @@ class EnsembleEncoder:
         hdc_acts = np.concatenate(encoded_targets.hdc_targets, axis=-1)
         pc_centers = self.concat_pc_centers()
         hdc_centers = self.concat_hdc_centers()
+        for ens in self.pc_ensembles:
+            decode_type = getattr(ens, "decode_type", "analytic")
+            if not is_supported_decode_type(decode_type):
+                raise ValueError(f"Unsupported ensemble decode_type={decode_type!r}.")
         if all(pc_supports_analytic_decode(ens) for ens in self.pc_ensembles):
             pc_scores = [ens.unnor_logpdf(target_pos) for ens in self.pc_ensembles]
             pred_pos = decode_position_from_pc_scores(pc_scores, self.pc_ensembles)
         else:
-            decoded = [
-                decode_position_from_pc_activations(pc_targets, ens.means)
-                for pc_targets, ens in zip(encoded_targets.pc_targets, self.pc_ensembles)
-            ]
+            decoded = []
+            for pc_targets, ens in zip(encoded_targets.pc_targets, self.pc_ensembles):
+                if getattr(ens, "decode_type", "analytic") == "top_k":
+                    decoded.append(
+                        decode_position_from_pc_activations_top_k(
+                            pc_targets,
+                            ens.means,
+                            k=getattr(ens, "decode_top_k", 3),
+                            lowest=getattr(ens, "pc_target_family", "gaussian")
+                            == "true_difference_of_gaussians",
+                        )
+                    )
+                else:
+                    decoded.append(decode_position_from_pc_activations(pc_targets, ens.means))
             pred_pos = np.stack(decoded, axis=0).mean(axis=0).astype(np.float32)
 
         return AnimationInputs(

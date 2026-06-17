@@ -18,6 +18,7 @@ from grid_cells.cells.encoding_utils import (
     compute_head_direction_mae_rad,
     compute_position_mse,
     decode_position_from_pc_activations,
+    decode_position_from_pc_activations_top_k,
     decode_head_direction_from_hdc_logits,
     decode_position_from_pc_logits,
     prepare_dataset_animation_inputs,
@@ -248,6 +249,52 @@ def test_difference_targets_fall_back_to_weighted_position_decoding():
     assert torch.allclose(decoded, expected, atol=1e-6)
 
 
+def test_decode_position_from_pc_logits_top_k_uses_configured_vote_count():
+    """Top-k PC logit decoding should vote over the selected cell centers."""
+    ensemble = PlaceCellEnsemble(
+        4,
+        stdev=0.4,
+        pos_min=-1.0,
+        pos_max=1.0,
+        seed=0,
+        decode_type="top_k",
+        decode_top_k=2,
+    )
+    ensemble.means = np.array(
+        [[10.0, 10.0], [2.0, 0.0], [0.0, 2.0], [-10.0, -10.0]],
+        dtype=np.float32,
+    )
+    logits = torch.tensor([[[0.0, 5.0, 4.0, -10.0]]], dtype=torch.float32)
+
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+
+    assert torch.allclose(decoded, torch.tensor([[[1.0, 1.0]]]), atol=1e-6)
+
+
+def test_decode_position_from_true_dog_logits_top_k_uses_lowest_activations():
+    """True DoG top-k logit decoding should mirror No-Free-Lunch lowest voting."""
+    ensemble = PlaceCellEnsemble(
+        4,
+        stdev=0.4,
+        pos_min=-1.0,
+        pos_max=1.0,
+        seed=0,
+        decode_type="top_k",
+        decode_top_k=2,
+        pc_target_family="true_difference_of_gaussians",
+        surround_scale=2.0,
+    )
+    ensemble.means = np.array(
+        [[10.0, 10.0], [1.0, 0.0], [0.0, 1.0], [3.0, 3.0]],
+        dtype=np.float32,
+    )
+    logits = torch.tensor([[[10.0, 1.0, 2.0, 3.0]]], dtype=torch.float32)
+
+    decoded = decode_position_from_pc_logits([logits], [ensemble])
+
+    assert torch.allclose(decoded, torch.tensor([[[0.5, 0.5]]]), atol=1e-6)
+
+
 def test_decode_position_from_pc_logits_returns_weighted_mean():
     """Uniform logits should decode to the mean of place-cell centres."""
     ensemble = PlaceCellEnsemble(2, stdev=0.35, pos_min=0.0, pos_max=1.0, seed=0)
@@ -279,6 +326,55 @@ def test_decode_position_from_pc_activations_returns_weighted_mean():
     decoded = decode_position_from_pc_activations(pc_acts, pc_centers)
 
     assert np.allclose(decoded, np.array([[[1.5, 1.5]]], dtype=np.float32))
+
+
+def test_decode_position_from_pc_activations_top_k_uses_center_votes():
+    """Top-k activation decoding should average only the selected cell centers."""
+    pc_acts = np.array([[[0.1, 0.9, 0.8, 0.2], [0.7, 0.4, 0.6, 0.3]]], dtype=np.float32)
+    pc_centers = np.array(
+        [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [10.0, 10.0]],
+        dtype=np.float32,
+    )
+
+    top_1 = decode_position_from_pc_activations_top_k(pc_acts, pc_centers, k=1)
+    top_3 = decode_position_from_pc_activations_top_k(pc_acts, pc_centers, k=3)
+
+    assert np.allclose(top_1, np.array([[[2.0, 0.0], [0.0, 0.0]]], dtype=np.float32))
+    assert np.allclose(
+        top_3,
+        np.array(
+            [[[4.0, 4.0], [2.0 / 3.0, 2.0 / 3.0]]],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_decode_position_from_pc_activations_top_k_can_use_lowest_values():
+    """True DoG-style top-k decoding should support lowest-activation voting."""
+    pc_acts = np.array([[[10.0, 1.0, 2.0, 3.0]]], dtype=np.float32)
+    pc_centers = np.array(
+        [[10.0, 10.0], [1.0, 0.0], [0.0, 1.0], [3.0, 3.0]],
+        dtype=np.float32,
+    )
+
+    decoded = decode_position_from_pc_activations_top_k(
+        pc_acts,
+        pc_centers,
+        k=2,
+        lowest=True,
+    )
+
+    assert np.allclose(decoded, np.array([[[0.5, 0.5]]], dtype=np.float32))
+
+
+@pytest.mark.parametrize("k", [0, -1, 5, 1.5])
+def test_decode_position_from_pc_activations_top_k_rejects_invalid_k(k):
+    """Top-k activation decoding should fail clearly for invalid vote counts."""
+    pc_acts = np.array([[[0.1, 0.9, 0.8, 0.2]]], dtype=np.float32)
+    pc_centers = np.zeros((4, 2), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="decode_top_k"):
+        decode_position_from_pc_activations_top_k(pc_acts, pc_centers, k=k)
 
 
 def test_decode_position_from_tiny_pc_activations_preserves_relative_weights():
@@ -673,3 +769,129 @@ def test_prepare_dataset_animation_inputs_builds_eval_style_payload(tmp_path):
     assert anim_inputs["hdc_acts"].shape == (2, 4, 6)
     assert anim_inputs["pc_centers"].shape == (5, 2)
     assert anim_inputs["hdc_centers"].shape == (6,)
+
+
+def test_prepare_dataset_animation_inputs_uses_top_k_for_dos_targets():
+    """DoS dataset previews should decode from top-k centers when configured."""
+    dataset = TrajectoryDataset(
+        num_samples=1,
+        seq_len=2,
+        env_size=2.2,
+        velocity_noise=(0.0, 0.0, 0.0),
+        seed=3,
+    )
+    target_pos = np.array([[[0.75, 0.05], [-0.9, -0.8]]], dtype=np.float32)
+    dataset._data["target_pos"] = target_pos
+    dataset._data["target_hd"] = np.zeros((1, 2, 1), dtype=np.float32)
+    pc_ens = [
+        PlaceCellEnsemble(
+            4,
+            stdev=0.25,
+            pos_min=-1.1,
+            pos_max=1.1,
+            seed=0,
+            decode_type="top_k",
+            decode_top_k=1,
+            pc_target_family="difference_of_gaussians",
+            pc_target_normalization="global",
+            surround_scale=2.0,
+        )
+    ]
+    pc_ens[0].means = np.array(
+        [[-1.0, -1.0], [0.8, 0.0], [0.0, 0.8], [1.0, 1.0]],
+        dtype=np.float32,
+    )
+    hdc_ens = [HeadDirectionCellEnsemble(6, concentration=20.0, seed=0)]
+    pc_targets = pc_ens[0].get_targets(target_pos)
+    expected = pc_ens[0].means[np.argmax(pc_targets, axis=-1)]
+    weighted = decode_position_from_pc_activations(pc_targets, pc_ens[0].means)
+
+    anim_inputs = prepare_dataset_animation_inputs(
+        dataset,
+        pc_ens,
+        hdc_ens,
+        max_trajectories=1,
+    )
+
+    assert np.allclose(anim_inputs["pred_pos"], expected, atol=1e-6)
+    assert not np.allclose(anim_inputs["pred_pos"], weighted, atol=1e-3)
+
+
+def test_prepare_dataset_animation_inputs_rejects_invalid_decode_type_after_top_k():
+    """Animation preparation should validate every PC ensemble decode type."""
+    dataset = TrajectoryDataset(
+        num_samples=1,
+        seq_len=1,
+        env_size=2.2,
+        velocity_noise=(0.0, 0.0, 0.0),
+        seed=3,
+    )
+    pc_ens = [
+        PlaceCellEnsemble(
+            4,
+            stdev=0.25,
+            pos_min=-1.1,
+            pos_max=1.1,
+            seed=0,
+            decode_type="top_k",
+            decode_top_k=1,
+        ),
+        PlaceCellEnsemble(
+            4,
+            stdev=0.25,
+            pos_min=-1.1,
+            pos_max=1.1,
+            seed=1,
+            decode_type="bad-mode",
+        ),
+    ]
+    hdc_ens = [HeadDirectionCellEnsemble(6, concentration=20.0, seed=0)]
+
+    with pytest.raises(ValueError, match="Unsupported ensemble decode_type"):
+        prepare_dataset_animation_inputs(dataset, pc_ens, hdc_ens, max_trajectories=1)
+
+
+def test_prepare_dataset_animation_inputs_uses_lowest_top_k_for_true_dog_targets():
+    """True DoG dataset previews should use lowest-activation top-k centers."""
+    dataset = TrajectoryDataset(
+        num_samples=1,
+        seq_len=1,
+        env_size=2.2,
+        velocity_noise=(0.0, 0.0, 0.0),
+        seed=3,
+    )
+    target_pos = np.array([[[0.75, 0.05]]], dtype=np.float32)
+    dataset._data["target_pos"] = target_pos
+    dataset._data["target_hd"] = np.zeros((1, 1, 1), dtype=np.float32)
+    pc_ens = [
+        PlaceCellEnsemble(
+            4,
+            stdev=0.25,
+            pos_min=-1.1,
+            pos_max=1.1,
+            seed=0,
+            decode_type="top_k",
+            decode_top_k=1,
+            pc_target_family="true_difference_of_gaussians",
+            pc_target_normalization="global",
+            surround_scale=2.0,
+        )
+    ]
+    pc_ens[0].means = np.array(
+        [[-1.0, -1.0], [0.8, 0.0], [0.0, 0.8], [1.0, 1.0]],
+        dtype=np.float32,
+    )
+    hdc_ens = [HeadDirectionCellEnsemble(6, concentration=20.0, seed=0)]
+    pc_targets = pc_ens[0].get_targets(target_pos)
+    expected = pc_ens[0].means[np.argmin(pc_targets, axis=-1)]
+    highest = pc_ens[0].means[np.argmax(pc_targets, axis=-1)]
+
+    anim_inputs = prepare_dataset_animation_inputs(
+        dataset,
+        pc_ens,
+        hdc_ens,
+        max_trajectories=1,
+    )
+
+    assert np.allclose(anim_inputs["pred_pos"], expected, atol=1e-6)
+    assert not np.allclose(anim_inputs["pred_pos"], highest, atol=1e-3)

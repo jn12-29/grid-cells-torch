@@ -1,9 +1,14 @@
 task:
   env_size: 2.2 # environment size in meters
   n_pc: [256] # list of place cell counts (one ensemble per entry)
-  pc_scale: [0.01] # place cell Gaussian std dev in meters (one value per ensemble)
+  pc_scale: [0.12] # place cell Gaussian std dev in meters (one value per ensemble)
+  # Reference-project terminology:
+  # - DoS / Difference of Softmaxes: pc_target_family="difference_of_gaussians" with pc_target_normalization="global".
+  # - true DoG / Difference of Gaussians: pc_target_family="true_difference_of_gaussians".
+  # For difference_of_gaussians, "global" subtracts population softmaxes; "none" subtracts raw Gaussian responses.
+  # true_difference_of_gaussians always subtracts raw center/surround Gaussian responses.
   pc_target_family: "gaussian" # PC target family: "gaussian"/"difference_of_gaussians"/"true_difference_of_gaussians"
-  pc_target_normalization: "global" # DoS normalization: "global" subtracts softmaxes, "none" subtracts raw Gaussian responses
+  pc_target_normalization: "global" # DoS normalization mode: "global" or "none"
   pc_surround_scale: [2.0] # surround sigma multiplier for DoS/DoG targets (one value or one per PC ensemble)
   n_hdc: [12] # head direction cell count (one ensemble per entry)
   hdc_concentration: [20.0] # Von Mises concentration κ (higher = narrower tuning)
@@ -12,7 +17,8 @@ task:
   neurons_seed: 8341 # RNG seed for cell center placement (matches original paper)
   targets_type: "softmax" # training-target encoding: "softmax"/"voronoi"/"sample"/"normalized"
   lstm_init_type: "softmax" # LSTM initial-state encoding: same options as targets_type, or "zeros"
-  decode_type: "analytic" # decoder for PC/HDC logits: "analytic" (scale-invariant for positive scaled softmax-compatible raw scores, fallback weighted) or "weighted_mean"
+  decode_type: "top_k" # decoder for PC/HDC logits: "analytic" (scale-invariant where supported, fallback weighted) or "weighted_mean"; PC logits also support "top_k"
+  decode_top_k: 3 # place-cell center votes for PC task.decode_type="top_k"
   velocity_noise: [0.0, 0.0, 0.0] # Gaussian nois'e std devs (σvx, σvy, σω) added to input velocities
   # Motion model parameters (Sargolini 2006 / Milford 2010 ~rodent locomotion)
   motion_dt: 0.02 # time step in seconds
@@ -28,7 +34,7 @@ model:
   dropout_rate: 0.5 # dropout probability applied after the bottleneck
   bottleneck_has_bias: false # whether the bottleneck linear layer includes a bias term
   init_weight_disp: 0.0 # mean displacement for output-head weight uniform init (0 = default init)
-  bottleneck_post_activation: "relu" # model-side post-linear bottleneck activation: "none", "relu", or "tanh"
+  bottleneck_post_activation: "none" # model-side post-linear bottleneck activation: "none", "relu", or "tanh"
 
 training:
   epochs: 200

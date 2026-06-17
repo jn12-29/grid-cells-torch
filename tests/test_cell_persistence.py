@@ -18,7 +18,15 @@ from grid_cells.cells.ensemble_utils import get_cell_ensembles
 from grid_cells.cells.persistence import load_cell_centers, save_cell_centers
 
 
-def _cfg(tmp_path, *, cells_path=None, datadir=None, env_size=2.2, seed=5):
+def _cfg(
+    tmp_path,
+    *,
+    cells_path=None,
+    datadir=None,
+    env_size=2.2,
+    seed=5,
+    pc_scale=None,
+):
     return SimpleNamespace(
         task=SimpleNamespace(
             env_size=env_size,
@@ -30,7 +38,7 @@ def _cfg(tmp_path, *, cells_path=None, datadir=None, env_size=2.2, seed=5):
             pc_target_normalization="global",
             pc_surround_scale=[2.0],
             n_pc=[4],
-            pc_scale=[0.35],
+            pc_scale=[0.35] if pc_scale is None else pc_scale,
             n_hdc=[3],
             hdc_concentration=[20.0],
         ),
@@ -118,6 +126,19 @@ def test_get_cell_ensembles_loads_datadir_cells_when_present(tmp_path):
 
     assert np.array_equal(loaded_pc[0].means, pc_ens[0].means)
     assert np.array_equal(loaded_hdc[0].means, hdc_ens[0].means)
+
+
+def test_load_cell_centers_allows_pc_scale_mismatch(tmp_path):
+    """Cell-center files should be reusable across place-cell width changes."""
+    cfg = _cfg(tmp_path, pc_scale=[0.35])
+    pc_ens, hdc_ens = get_cell_ensembles(cfg)
+    path = tmp_path / "cells.npz"
+    save_cell_centers(str(path), pc_ens, hdc_ens, cfg)
+
+    loaded_pc, loaded_hdc = load_cell_centers(str(path), _cfg(tmp_path, pc_scale=[0.15]))
+
+    assert np.array_equal(loaded_pc[0], pc_ens[0].means)
+    assert np.array_equal(loaded_hdc[0], hdc_ens[0].means)
 
 
 def test_load_cell_centers_rejects_metadata_mismatch(tmp_path):

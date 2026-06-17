@@ -33,19 +33,29 @@ PC_DIFFERENCE_TARGET_FAMILIES = {
 class CellEnsemble(ABC):
     """Base class for cell ensembles (place cells, head direction cells, etc.)."""
 
-    def __init__(self, n_cells, soft_targets, soft_init, decode_type="analytic"):
+    def __init__(
+        self,
+        n_cells,
+        soft_targets,
+        soft_init,
+        decode_type="analytic",
+        decode_top_k=3,
+    ):
         """
         Args:
             n_cells: number of cells in the ensemble.
             soft_targets: one of "softmax", "voronoi", "sample", "normalized".
             soft_init: same options as soft_targets, or "zeros". If None,
                        defaults to soft_targets.
-            decode_type: position/heading decoder mode ("analytic" or "weighted_mean").
+            decode_type: position/heading decoder mode
+                ("analytic", "weighted_mean", or PC-only "top_k").
+            decode_top_k: place-cell vote count when decode_type is "top_k".
         """
         self.n_cells = n_cells
         self.soft_targets = soft_targets
         self.soft_init = soft_init if soft_init is not None else soft_targets
         self.decode_type = decode_type
+        self.decode_top_k = decode_top_k
 
     # ------------------------------------------------------------------
     # Abstract interface — subclasses must implement
@@ -256,6 +266,7 @@ class PlaceCellEnsemble(CellEnsemble):
         pc_target_family="gaussian",
         pc_target_normalization="global",
         surround_scale=2.0,
+        decode_top_k=3,
     ):
         """
         Args:
@@ -266,14 +277,22 @@ class PlaceCellEnsemble(CellEnsemble):
             seed: random seed for reproducible cell placement.
             soft_targets: target encoding mode ("softmax"/"voronoi"/"sample"/"normalized").
             soft_init: init encoding mode; defaults to soft_targets if None.
-            decode_type: position decoder mode ("analytic" or "weighted_mean").
+            decode_type: position decoder mode
+                ("analytic", "top_k", or "weighted_mean").
+            decode_top_k: number of place-cell centers used by top-k decoding.
             pc_target_family: place-cell target family
                 ("gaussian"/"difference_of_gaussians"/"true_difference_of_gaussians").
             pc_target_normalization: DoS normalization mode ("global"/"none");
                 true DoG records the value but subtracts raw Gaussian responses.
             surround_scale: surround Gaussian sigma multiplier for DoS/DoG targets.
         """
-        super().__init__(n_cells, soft_targets, soft_init, decode_type=decode_type)
+        super().__init__(
+            n_cells,
+            soft_targets,
+            soft_init,
+            decode_type=decode_type,
+            decode_top_k=decode_top_k,
+        )
         if pc_target_family not in PC_TARGET_FAMILIES:
             supported = ", ".join(sorted(PC_TARGET_FAMILIES))
             raise ValueError(
@@ -424,6 +443,7 @@ class HeadDirectionCellEnsemble(CellEnsemble):
         soft_targets="softmax",
         soft_init=None,
         decode_type="analytic",
+        decode_top_k=3,
     ):
         """
         Args:
@@ -433,8 +453,15 @@ class HeadDirectionCellEnsemble(CellEnsemble):
             soft_targets: target encoding mode.
             soft_init: init encoding mode; defaults to soft_targets if None.
             decode_type: heading decoder mode ("analytic" or "weighted_mean").
+            decode_top_k: retained for shared config compatibility; unused by HDC decoding.
         """
-        super().__init__(n_cells, soft_targets, soft_init, decode_type=decode_type)
+        super().__init__(
+            n_cells,
+            soft_targets,
+            soft_init,
+            decode_type=decode_type,
+            decode_top_k=decode_top_k,
+        )
         self._rng = np.random.RandomState(seed)
         # Preferred directions uniformly distributed over [-pi, pi)
         self.means = self._rng.uniform(-np.pi, np.pi, size=(n_cells,)).astype(np.float32)

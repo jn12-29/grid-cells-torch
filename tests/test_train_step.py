@@ -62,6 +62,7 @@ def make_cfg():
             targets_type="softmax",
             lstm_init_type="softmax",
             decode_type="analytic",
+            decode_top_k=3,
             pc_target_family="gaussian",
             pc_target_normalization="global",
             pc_surround_scale=[2.0],
@@ -965,6 +966,7 @@ def test_load_config_returns_nested_namespace(tmp_path):
     cfg = load_config(str(config_path))
 
     assert cfg.task.env_size == 2.2
+    assert cfg.task.decode_top_k == 3
     assert cfg.training.epochs == 5
     assert cfg.visualization.anim_fps == 24
 
@@ -984,6 +986,7 @@ def test_apply_overrides_updates_nested_sections_and_ignores_cli_paths():
         data_path="data/latest/train.npz",
         eval_data_path="data/latest/eval.npz",
         task__env_size=3.0,
+        task__decode_top_k=5,
         model__dropout_rate=0.25,
         training__epochs=20,
         visualization__anim_step=2,
@@ -996,6 +999,7 @@ def test_apply_overrides_updates_nested_sections_and_ignores_cli_paths():
 
     assert updated is cfg
     assert cfg.task.env_size == 3.0
+    assert cfg.task.decode_top_k == 5
     assert cfg.model.dropout_rate == 0.25
     assert cfg.training.epochs == 20
     assert cfg.visualization.anim_step == 2
@@ -1588,6 +1592,8 @@ def test_register_config_overrides_supports_shared_sections():
             "softmax",
             "--task.decode_type",
             "analytic",
+            "--task.decode_top_k",
+            "7",
             "--task.pc_target_family",
             "difference_of_gaussians",
             "--task.pc_target_normalization",
@@ -1667,6 +1673,7 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.task__targets_type == "softmax"
     assert args.task__lstm_init_type == "softmax"
     assert args.task__decode_type == "analytic"
+    assert args.task__decode_top_k == 7
     assert args.task__pc_target_family == "difference_of_gaussians"
     assert args.task__pc_target_normalization == "global"
     assert args.task__pc_surround_scale == [2.0]
@@ -1718,7 +1725,9 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "--task.cells_path",
             "data/cells.npz",
             "--task.decode_type",
-            "weighted_mean",
+            "top_k",
+            "--task.decode_top_k",
+            "3",
             "--task.pc_target_family",
             "true_difference_of_gaussians",
             "--task.pc_target_normalization",
@@ -1775,7 +1784,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
 
     assert args.task__env_size == 2.8
     assert args.task__cells_path == "data/cells.npz"
-    assert args.task__decode_type == "weighted_mean"
+    assert args.task__decode_type == "top_k"
+    assert args.task__decode_top_k == 3
     assert args.task__pc_target_family == "true_difference_of_gaussians"
     assert args.task__pc_target_normalization == "none"
     assert args.task__pc_surround_scale == [2.5]
@@ -1859,6 +1869,33 @@ def test_validate_cell_code_contract_warns_once_for_non_softmax():
     assert len(messages) == 2
     assert "targets_type='softmax'" in messages[0]
     assert "lstm_init_type='softmax'" in messages[1]
+
+
+def test_top_k_decode_type_only_changes_place_cell_ensembles():
+    """Shared top-k config should leave HDC ensembles on analytic decoding."""
+    from grid_cells.cells.ensemble_utils import create_cell_ensembles_from_config
+
+    cfg = make_cfg()
+    cfg.task.decode_type = "top_k"
+    cfg.task.decode_top_k = 3
+
+    pc_ens, hdc_ens = create_cell_ensembles_from_config(cfg)
+
+    assert pc_ens[0].decode_type == "top_k"
+    assert pc_ens[0].decode_top_k == 3
+    assert hdc_ens[0].decode_type == "analytic"
+
+
+def test_validate_cell_code_contract_rejects_non_integer_top_k():
+    """Top-k config should not silently truncate fractional vote counts."""
+    from grid_cells.cells import contracts
+
+    cfg = make_cfg()
+    cfg.task.decode_type = "top_k"
+    cfg.task.decode_top_k = 1.5
+
+    with pytest.raises(ValueError, match="integer"):
+        contracts.validate_cell_code_contract(cfg)
 
 
 def test_create_summary_writer_uses_tensorboard_subdir(monkeypatch):
