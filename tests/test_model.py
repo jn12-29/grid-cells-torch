@@ -59,6 +59,14 @@ def _run_fixed_bottleneck_forward(model, pc_ens, hdc_ens):
     return model(init_cond, velocity, training=False)
 
 
+def _fixed_bottleneck_inputs(pc_ens, hdc_ens):
+    batch, seq_len = 2, 3
+    init_cond_size = sum(e.n_cells for e in pc_ens) + sum(e.n_cells for e in hdc_ens)
+    init_cond = torch.zeros(batch, init_cond_size)
+    velocity = torch.zeros(batch, seq_len, 3)
+    return init_cond, velocity
+
+
 def test_forward_output_shapes():
     """Model returns tensors of expected shapes."""
     model, pc_ens, hdc_ens = make_model()
@@ -88,6 +96,41 @@ def test_forward_deterministic_with_dropout_off():
     _, _, bn1, _ = model(init_cond, velocity, training=False)
     _, _, bn2, _ = model(init_cond, velocity, training=False)
     assert torch.allclose(bn1, bn2)
+
+
+def test_forward_default_dropout_mode_follows_module_training_state():
+    """Omitted training flag should follow model.train()/eval()."""
+    model, pc_ens, hdc_ens = _fixed_bottleneck_model()
+    model.dropout_rate = 1.0
+    init_cond, velocity = _fixed_bottleneck_inputs(pc_ens, hdc_ens)
+    expected_active = torch.tensor([-1.5, 2.0]).reshape(1, 1, 2).expand(2, 3, 2)
+
+    model.eval()
+    _, _, eval_bottleneck, _ = model(init_cond, velocity)
+    assert torch.allclose(eval_bottleneck, expected_active)
+
+    model.train()
+    _, _, train_bottleneck, _ = model(init_cond, velocity)
+    assert torch.allclose(train_bottleneck, torch.zeros_like(train_bottleneck))
+
+
+def test_forward_explicit_training_flag_overrides_module_training_state():
+    """Explicit training flag should control dropout for one forward pass."""
+    model, pc_ens, hdc_ens = _fixed_bottleneck_model()
+    model.dropout_rate = 1.0
+    init_cond, velocity = _fixed_bottleneck_inputs(pc_ens, hdc_ens)
+    expected_active = torch.tensor([-1.5, 2.0]).reshape(1, 1, 2).expand(2, 3, 2)
+
+    model.eval()
+    _, _, forced_training_bottleneck, _ = model(init_cond, velocity, training=True)
+    assert torch.allclose(
+        forced_training_bottleneck,
+        torch.zeros_like(forced_training_bottleneck),
+    )
+
+    model.train()
+    _, _, forced_eval_bottleneck, _ = model(init_cond, velocity, training=False)
+    assert torch.allclose(forced_eval_bottleneck, expected_active)
 
 
 def test_default_and_none_bottleneck_post_activation_preserve_linear_output():

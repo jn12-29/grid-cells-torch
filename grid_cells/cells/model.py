@@ -128,13 +128,14 @@ class GridCellsRNN(nn.Module):
     # Forward pass
     # ------------------------------------------------------------------
 
-    def forward(self, init_cond, velocity, training=True):
+    def forward(self, init_cond, velocity, training=None):
         """
         Args:
             init_cond: torch.Tensor (batch, init_cond_size) — concatenated ensemble
                        init codes (output of get_init for all pc + hdc ensembles).
             velocity:  torch.Tensor (batch, seq_len, 3)    — ego velocity [vx, vy, omega].
-            training:  bool — controls dropout (independent of self.training).
+            training:  optional bool — controls dropout for this forward pass.
+                       Defaults to self.training when None.
 
         Returns:
             pc_logits:       list of Tensor (batch, seq_len, n_cells_i), one per pc ensemble
@@ -146,6 +147,8 @@ class GridCellsRNN(nn.Module):
             f"init_cond dim {init_cond.shape[1]} != expected {self.init_cond_size}")
         assert velocity.shape[2] == 3, f"velocity last dim should be 3, got {velocity.shape[2]}"
         batch_size, seq_len, _ = velocity.shape
+        if training is None:
+            training = self.training
 
         # ------------------------------------------------------------------
         # Initialise LSTM state from init_cond
