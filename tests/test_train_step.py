@@ -79,6 +79,7 @@ def make_cfg():
             dropout_rate=0.5,
             bottleneck_has_bias=False,
             init_weight_disp=0.0,
+            bottleneck_post_activation="none",
         ),
         training=SimpleNamespace(
             batch_size=4,
@@ -1032,6 +1033,15 @@ def test_analyze_checkpoint_parse_args_allows_only_posthoc_overrides():
                 "64",
             ]
         )
+    with pytest.raises(SystemExit):
+        analyze_checkpoint_module.parse_args(
+            [
+                "--checkpoint",
+                "checkpoint.pt",
+                "--model.bottleneck_post_activation",
+                "relu",
+            ]
+        )
 
 
 def test_analyze_checkpoint_default_output_dir_uses_ckpt_analysis_folder():
@@ -1049,6 +1059,9 @@ def test_analyze_checkpoint_default_output_dir_uses_ckpt_analysis_folder():
 def test_analyze_checkpoint_rebuilds_from_payload_and_runs_eval(monkeypatch, tmp_path):
     """Post-hoc analysis should load ckpt config, weights, centers, and epoch."""
     checkpoint_path, pc_centers, hdc_centers = _save_small_grid_checkpoint(tmp_path)
+    old_payload = analyze_checkpoint_module.load_checkpoint_payload(checkpoint_path)
+    old_payload["config"]["model"].pop("bottleneck_post_activation")
+    torch.save(old_payload, checkpoint_path)
     output_dir = tmp_path / "posthoc"
     eval_path = tmp_path / "eval_override.npz"
     captured = {}
@@ -1069,6 +1082,7 @@ def test_analyze_checkpoint_rebuilds_from_payload_and_runs_eval(monkeypatch, tmp
         captured["anim_step"] = cfg.visualization.anim_step
         captured["epoch"] = epoch
         captured["writer"] = writer
+        captured["bottleneck_post_activation"] = model.bottleneck_post_activation
 
     monkeypatch.setattr(analyze_checkpoint_module, "_build_eval_loader", fake_build_eval_loader)
     monkeypatch.setattr(analyze_checkpoint_module, "_evaluate", fake_evaluate)
@@ -1105,6 +1119,7 @@ def test_analyze_checkpoint_rebuilds_from_payload_and_runs_eval(monkeypatch, tmp
     assert captured["anim_step"] == 3
     assert captured["epoch"] == 7
     assert captured["writer"] is None
+    assert captured["bottleneck_post_activation"] == "none"
     assert np.array_equal(captured["pc_centers"], pc_centers)
     assert np.array_equal(captured["hdc_centers"], hdc_centers)
     loaded_cfg = load_config(str(output_dir / "config.yaml"))
@@ -1121,6 +1136,7 @@ def test_analyze_checkpoint_programmatic_args_ignore_unsafe_overrides(tmp_path):
         output_dir=str(tmp_path / "posthoc"),
         eval_data_path=None,
         model__nh_lstm=99,
+        model__bottleneck_post_activation="relu",
         task__env_size=9.9,
         analysis__compute_linear_spatial_pca=True,
     )
@@ -1128,6 +1144,10 @@ def test_analyze_checkpoint_programmatic_args_ignore_unsafe_overrides(tmp_path):
     cfg = analyze_checkpoint_module.build_analysis_config(payload, args)
 
     assert cfg.model.nh_lstm == payload["config"]["model"]["nh_lstm"]
+    assert (
+        cfg.model.bottleneck_post_activation
+        == payload["config"]["model"]["bottleneck_post_activation"]
+    )
     assert cfg.task.env_size == payload["config"]["task"]["env_size"]
     assert cfg.analysis.compute_linear_spatial_pca is True
 
@@ -1421,6 +1441,8 @@ def test_register_config_overrides_supports_shared_sections():
             "analytic",
             "--model.nh_lstm",
             "64",
+            "--model.bottleneck_post_activation",
+            "relu",
             "--training.batch_size",
             "8",
             "--training.lr_scheduler",
@@ -1486,6 +1508,7 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.task__lstm_init_type == "softmax"
     assert args.task__decode_type == "analytic"
     assert args.model__nh_lstm == 64
+    assert args.model__bottleneck_post_activation == "relu"
     assert args.training__batch_size == 8
     assert args.training__lr_scheduler == "cosine"
     assert args.training__lr_min == 1e-5
@@ -1533,6 +1556,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "weighted_mean",
             "--model.dropout_rate",
             "0.25",
+            "--model.bottleneck_post_activation",
+            "tanh",
             "--training.batch_size",
             "16",
             "--training.lr_scheduler",
@@ -1576,6 +1601,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.task__cells_path == "data/cells.npz"
     assert args.task__decode_type == "weighted_mean"
     assert args.model__dropout_rate == 0.25
+    assert args.model__bottleneck_post_activation == "tanh"
     assert args.training__batch_size == 16
     assert args.training__lr_scheduler == "step"
     assert args.training__lr_step_size == 10
@@ -2481,7 +2507,7 @@ def _single_eval_batch():
     }
 
 
-def _run_signed_bottleneck_eval(monkeypatch, tmp_path, bottleneck_activation):
+def _run_model_returned_bottleneck_eval(monkeypatch, tmp_path, bottleneck_activation):
     cfg = make_cfg()
     cfg.training.save_dir = str(tmp_path)
     cfg.training.eval_num_workers = 0
@@ -2556,7 +2582,7 @@ def _run_signed_bottleneck_eval(monkeypatch, tmp_path, bottleneck_activation):
         epoch=5,
     )
 
-    captured["raw_bottleneck"] = model.last_bottleneck
+    captured["model_returned_bottleneck"] = model.last_bottleneck
     return captured
 
 
@@ -2565,23 +2591,23 @@ def test_evaluate_default_relu_bottleneck_activation_feeds_analysis_paths(
     tmp_path,
 ):
     """Eval analysis consumers should see ReLU-transformed bottleneck activations."""
-    captured = _run_signed_bottleneck_eval(monkeypatch, tmp_path, "relu")
-    expected = np.maximum(captured["raw_bottleneck"], 0.0)
+    captured = _run_model_returned_bottleneck_eval(monkeypatch, tmp_path, "relu")
+    expected = np.maximum(captured["model_returned_bottleneck"], 0.0)
 
-    assert captured["raw_bottleneck"].min() < 0.0
+    assert captured["model_returned_bottleneck"].min() < 0.0
     assert captured["ratemap_activations"].min() >= 0.0
     np.testing.assert_allclose(captured["ratemap_activations"], expected)
     np.testing.assert_allclose(captured["spatial_stats_activations"], expected)
     np.testing.assert_allclose(captured["linear_pca_activations"], expected)
 
 
-def test_evaluate_raw_bottleneck_activation_preserves_negative_analysis_inputs(
+def test_evaluate_raw_bottleneck_activation_preserves_model_returned_bottleneck(
     monkeypatch,
     tmp_path,
 ):
-    """The raw analysis mode should preserve pre-ReLU bottleneck values."""
-    captured = _run_signed_bottleneck_eval(monkeypatch, tmp_path, "raw")
-    expected = captured["raw_bottleneck"]
+    """The raw analysis mode should preserve model-returned bottleneck values."""
+    captured = _run_model_returned_bottleneck_eval(monkeypatch, tmp_path, "raw")
+    expected = captured["model_returned_bottleneck"]
 
     assert expected.min() < 0.0
     assert captured["ratemap_activations"].min() < 0.0

@@ -30,6 +30,10 @@ CONFIG_OVERRIDE_SPECS = {
         "dropout_rate": {"type": float},
         "bottleneck_has_bias": {"type": str2bool},
         "init_weight_disp": {"type": float},
+        "bottleneck_post_activation": {
+            "type": str,
+            "choices": ("none", "relu", "tanh"),
+        },
     },
     "training": {
         "epochs": {"type": int},

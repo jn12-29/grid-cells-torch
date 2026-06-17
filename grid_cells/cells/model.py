@@ -16,9 +16,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+_BOTTLENECK_POST_ACTIVATIONS = ("none", "relu", "tanh")
+
+
+def _normalize_bottleneck_post_activation(value) -> str:
+    """Return the configured model-side bottleneck post-linear activation."""
+    if not isinstance(value, str):
+        expected = ", ".join(repr(item) for item in _BOTTLENECK_POST_ACTIVATIONS)
+        raise ValueError(
+            f"Unsupported model.bottleneck_post_activation={value!r}; "
+            f"expected one of: {expected}."
+        )
+    mode = value.lower()
+    if mode not in _BOTTLENECK_POST_ACTIVATIONS:
+        expected = ", ".join(repr(item) for item in _BOTTLENECK_POST_ACTIVATIONS)
+        raise ValueError(
+            f"Unsupported model.bottleneck_post_activation={value!r}; "
+            f"expected one of: {expected}."
+        )
+    return mode
+
+
 class GridCellsRNN(nn.Module):
     def __init__(self, pc_ensembles, hdc_ensembles, nh_lstm=128, nh_bottleneck=256,
-                 dropout_rate=0.5, bottleneck_has_bias=False, init_weight_disp=0.0):
+                 dropout_rate=0.5, bottleneck_has_bias=False, init_weight_disp=0.0,
+                 bottleneck_post_activation="none"):
         """
         Args:
             pc_ensembles:        list of PlaceCellEnsemble
@@ -28,6 +50,7 @@ class GridCellsRNN(nn.Module):
             dropout_rate:        dropout probability applied after bottleneck
             bottleneck_has_bias: whether the bottleneck linear layer has bias
             init_weight_disp:    mean displacement for output head weight uniform init
+            bottleneck_post_activation: activation after bottleneck linear layer
         """
         super().__init__()
 
@@ -39,6 +62,9 @@ class GridCellsRNN(nn.Module):
         self.nh_bottleneck = nh_bottleneck
         self.dropout_rate = dropout_rate
         self.init_weight_disp = init_weight_disp
+        self.bottleneck_post_activation = _normalize_bottleneck_post_activation(
+            bottleneck_post_activation
+        )
 
         # ------------------------------------------------------------------
         # Compute init_cond_size: sum of n_cells for all pc + hdc ensembles
@@ -62,7 +88,7 @@ class GridCellsRNN(nn.Module):
         self.lstm = nn.LSTM(input_size=3, hidden_size=nh_lstm, batch_first=True)
 
         # ------------------------------------------------------------------
-        # Bottleneck: Linear(nh_lstm -> nh_bottleneck), no activation
+        # Bottleneck: Linear(nh_lstm -> nh_bottleneck), optional post activation
         # ------------------------------------------------------------------
         self.bottleneck = nn.Linear(nh_lstm, nh_bottleneck, bias=bottleneck_has_bias)
 
@@ -133,8 +159,9 @@ class GridCellsRNN(nn.Module):
         lstm_acts, _ = self.lstm(velocity, (h.unsqueeze(0), c.unsqueeze(0)))
         # lstm_acts: (B, T, nh_lstm)
 
-        # Bottleneck + dropout over full sequence
+        # Bottleneck post activation + dropout over full sequence
         bottleneck_acts = self.bottleneck(lstm_acts)                         # (B, T, nh_bottleneck)
+        bottleneck_acts = self._apply_bottleneck_post_activation(bottleneck_acts)
         bottleneck_acts = F.dropout(bottleneck_acts, p=self.dropout_rate, training=training)
 
         # ------------------------------------------------------------------
@@ -144,3 +171,15 @@ class GridCellsRNN(nn.Module):
         hdc_logits = [head(bottleneck_acts) for head in self.hdc_heads]
 
         return pc_logits, hdc_logits, bottleneck_acts, lstm_acts
+
+    def _apply_bottleneck_post_activation(self, bottleneck_acts):
+        """Apply the configured model-side bottleneck post-linear activation."""
+        if self.bottleneck_post_activation == "none":
+            return bottleneck_acts
+        if self.bottleneck_post_activation == "relu":
+            return F.relu(bottleneck_acts)
+        if self.bottleneck_post_activation == "tanh":
+            return torch.tanh(bottleneck_acts)
+        raise ValueError(
+            f"Unsupported model.bottleneck_post_activation={self.bottleneck_post_activation!r}"
+        )

@@ -61,7 +61,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_grid_selectivity false
 17. Train with the v1 linear spatial-PCA gridness baseline diagnostics
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_linear_spatial_pca true --analysis.linear_spatial_pca_top_k 16 --analysis.linear_spatial_pca_num_shuffles 20 --analysis.linear_spatial_pca_plot_top_n 16
 
-18. Train while analyzing signed bottleneck outputs directly
+18. Train while analyzing the model-returned bottleneck without an extra eval transform
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.bottleneck_activation raw
 
 19. Train with the step learning-rate scheduler
