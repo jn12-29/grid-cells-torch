@@ -7,6 +7,7 @@ import os
 import re
 
 import torch
+from pytorch_optimizer import Lion
 
 from grid_cells.common.config import namespace_to_dict
 from grid_cells.data.dataset import get_dataloader
@@ -84,6 +85,16 @@ def _make_param_groups(model, cfg):
     return param_groups, decoder_params
 
 
+def _resolve_betas(cfg, default):
+    if hasattr(cfg.training, "adamw_betas"):
+        raise ValueError("training.adamw_betas has been renamed to training.betas")
+    betas = getattr(cfg.training, "betas", None)
+    if betas is None:
+        return default
+    beta1, beta2 = betas
+    return (beta1, beta2)
+
+
 def build_optimizer(model, cfg):
     """Build the configured optimizer for training."""
     param_groups, decoder_params = _make_param_groups(model, cfg)
@@ -99,22 +110,20 @@ def build_optimizer(model, cfg):
         return optimizer, decoder_params
 
     if optimizer_name == "adamw":
-        beta1, beta2 = getattr(cfg.training, "adamw_betas", [0.9, 0.999])
         optimizer = torch.optim.AdamW(
             param_groups,
             lr=cfg.training.lr,
-            betas=(beta1, beta2),
+            betas=_resolve_betas(cfg, (0.9, 0.999)),
             eps=getattr(cfg.training, "adamw_eps", 1e-8),
             weight_decay=0.0,
         )
         return optimizer, decoder_params
 
     if optimizer_name == "adam":
-        beta1, beta2 = getattr(cfg.training, "adamw_betas", [0.9, 0.999])
         optimizer = torch.optim.Adam(
             param_groups,
             lr=cfg.training.lr,
-            betas=(beta1, beta2),
+            betas=_resolve_betas(cfg, (0.9, 0.999)),
             eps=getattr(cfg.training, "adamw_eps", 1e-8),
             weight_decay=0.0,
         )
@@ -125,6 +134,15 @@ def build_optimizer(model, cfg):
             param_groups,
             lr=cfg.training.lr,
             momentum=cfg.training.momentum,
+            weight_decay=0.0,
+        )
+        return optimizer, decoder_params
+
+    if optimizer_name == "lion":
+        optimizer = Lion(
+            param_groups,
+            lr=cfg.training.lr,
+            betas=_resolve_betas(cfg, (0.9, 0.99)),
             weight_decay=0.0,
         )
         return optimizer, decoder_params

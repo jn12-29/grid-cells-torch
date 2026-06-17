@@ -35,14 +35,14 @@ training:
   data_path: "data/latest/train.npz"
   eval_num_samples: 4000 # number of trajectories in the fixed in-memory eval set when no eval file is loaded
   eval_data_path: "data/latest/eval.npz"
-  optimizer: "rmsprop" # "rmsprop", "adamw", "adam", or "sgd"
+  optimizer: "rmsprop" # "rmsprop", "adamw", "adam", "sgd", or "lion"
   lr: 1.0e-3
   lr_scheduler: "cosine" # default epoch-level scheduler; set "none" to disable, or "step" for StepLR
   lr_min: 1.0e-5 # minimum learning rate for cosine scheduling
   lr_step_size: 50 # epoch interval for step scheduling
   lr_gamma: 0.5 # learning-rate multiplier for step scheduling
   momentum: 0.9 # momentum coefficient (used when optimizer is "rmsprop" or "sgd")
-  adamw_betas: [0.9, 0.999] # Adam/AdamW β1 (gradient) and β2 (squared-gradient) decay rates
+  betas: null # optional β1/β2 decay rates for Adam, AdamW, and Lion; null uses each optimizer's default
   adamw_eps: 1.0e-8 # Adam/AdamW ε for numerical stability in denominator
   weight_decay: 0.0
   grad_clip: 1.0e-5 # gradient clipping threshold

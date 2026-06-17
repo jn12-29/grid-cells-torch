@@ -68,7 +68,7 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 python train.py
 
 # or choose an optimizer
-python train.py --training.optimizer adam
+python train.py --training.optimizer lion
 
 # or save periodic checkpoints every 5 completed epochs
 python train.py --training.checkpoint_every 5
@@ -166,7 +166,7 @@ grid-cells-torch/
 - `config.yaml` is the default experiment entry point and supports CLI overrides, for example `python train.py --training.epochs 100 --training.lr 1e-3`.
 - Each training run saves the effective config to `<run directory>/config.yaml` after applying CLI overrides.
 - Checkpoints are save-only artifacts; training resume is not implemented yet. Use `analyze_checkpoint.py --checkpoint <path>` to rerun full eval/analysis artifacts from checkpoint weights. By default, the post-hoc output is written to `<run directory>/ckpt_analysis/<checkpoint_stem>/`; pass `--output_dir` to choose another directory.
-- Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, `adam`, and `sgd`; `training.momentum` applies to RMSprop and SGD.
+- Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, `adam`, `sgd`, and `lion`; `training.betas` applies to Adam, AdamW, and Lion when set; `training.adamw_eps` applies to Adam and AdamW; `training.momentum` applies to RMSprop and SGD.
 - Learning-rate scheduling supports `cosine`, `step`, and `none`; StepLR uses `training.lr_step_size` and `training.lr_gamma`.
 - Gradient clipping uses `training.grad_clip` as the threshold. `training.grad_clip_mode` supports `value` elementwise clipping and `norm` proportional rescaling; `training.grad_clip_scope` supports `decoder` and `all`; `training.grad_clip_norm_type: "inf"` uses the largest absolute gradient value for norm clipping. Training logs sampled per-module gradient diagnostics for `state_init`, `cell_init`, `lstm`, `bottleneck`, `pc_heads`, and `hdc_heads`; TensorBoard receives step and epoch-mean scalars under `train/grad/<module>/...` for norm, RMS, mean-absolute, signed-mean, max-absolute, `pre_clip_exceed_frac` (`abs(grad) > abs(training.grad_clip)` before clipping), `clip_changed_frac`, `post_clip_saturated_frac`, and `clip_ratio`, while `train.log` receives compact epoch sampled means.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.

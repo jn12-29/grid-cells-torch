@@ -1,4 +1,5 @@
 torch
+pytorch-optimizer
 numpy
 scipy
 matplotlib

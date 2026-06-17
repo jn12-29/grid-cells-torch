@@ -38,40 +38,43 @@ CUDA_VISIBLE_DEVICES=0 python analyze_checkpoint.py --checkpoint results/<run>/c
 10. Train with Adam
 CUDA_VISIBLE_DEVICES=0 python train.py --training.optimizer adam
 
-11. Train with SGD
+11. Train with Lion and explicit betas
+CUDA_VISIBLE_DEVICES=0 python train.py --training.optimizer lion --training.betas 0.9 0.99
+
+12. Train with SGD
 CUDA_VISIBLE_DEVICES=0 python train.py --training.optimizer sgd --training.momentum 0.9
 
-12. Train with config overrides
+13. Train with config overrides
 CUDA_VISIBLE_DEVICES=0 python train.py --training.epochs 20 --training.eval_every 1 --visualization.anim_step 2
 
-13. Train with the recommended scale-invariant analytic decoding contract made explicit
+14. Train with the recommended scale-invariant analytic decoding contract made explicit
 CUDA_VISIBLE_DEVICES=0 python train.py --task.targets_type softmax --task.lstm_init_type softmax --task.decode_type analytic
 
 Note: --task.targets_type normalized uses unit-peak independent activation targets, sigmoid/BCE loss, and sigmoid-activation weighted decoding; softmax remains the recommended analytic-decoding contract.
 
-14. Train with emphasized timestep-0 place-cell target loss
+15. Train with emphasized timestep-0 place-cell target loss
 CUDA_VISIBLE_DEVICES=0 python train.py --training.first_pos_loss_multiplier 50
 
-15. Train with lighter statistical analysis settings and population scale histogram/GMM plots
+16. Train with lighter statistical analysis settings and population scale histogram/GMM plots
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.num_shuffles 20 --analysis.scale_discreteness_num_shuffles 50 --analysis.max_eval_trajectories 64
 
-16. Train with only per-unit Banino-style grid geometry analysis
+17. Train with only per-unit Banino-style grid geometry analysis
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_grid_selectivity false --analysis.compute_grid_geometry true --analysis.compute_shuffle_significance false --analysis.compute_split_half false --analysis.compute_hd_selectivity false
 
-17. Train with the v1 linear spatial-PCA gridness baseline diagnostics
+18. Train with the v1 linear spatial-PCA gridness baseline diagnostics
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.compute_linear_spatial_pca true --analysis.linear_spatial_pca_top_k 16 --analysis.linear_spatial_pca_num_shuffles 20 --analysis.linear_spatial_pca_plot_top_n 16
 
-18. Train while analyzing the model-returned bottleneck without an extra eval transform
+19. Train while analyzing the model-returned bottleneck without an extra eval transform
 CUDA_VISIBLE_DEVICES=0 python train.py --analysis.bottleneck_activation raw
 
-19. Train with the step learning-rate scheduler
+20. Train with the step learning-rate scheduler
 CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler step --training.lr_step_size 10 --training.lr_gamma 0.8
 
-20. Train with infinity-norm gradient clipping across all model parameters
+21. Train with infinity-norm gradient clipping across all model parameters
 CUDA_VISIBLE_DEVICES=0 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
 
 Monitor
 
-21. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
+22. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
 tensorboard --logdir results
 EOF

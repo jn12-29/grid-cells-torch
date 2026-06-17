@@ -12,6 +12,7 @@ import os
 import numpy as np
 import pytest
 import torch
+from pytorch_optimizer import Lion
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -93,7 +94,7 @@ def make_cfg():
             lr_step_size=2,
             lr_gamma=0.5,
             momentum=0.9,
-            adamw_betas=[0.9, 0.999],
+            betas=None,
             adamw_eps=1e-8,
             weight_decay=1e-5,
             grad_clip=1e-5,
@@ -674,7 +675,7 @@ def test_build_optimizer_can_switch_to_adamw():
     """Optimizer builder should support AdamW via config."""
     cfg = make_cfg()
     cfg.training.optimizer = "adamw"
-    cfg.training.adamw_betas = [0.8, 0.95]
+    cfg.training.betas = [0.8, 0.95]
     cfg.training.adamw_eps = 1e-6
     pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
     hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
@@ -688,11 +689,27 @@ def test_build_optimizer_can_switch_to_adamw():
     assert optimizer.defaults["eps"] == 1e-6
 
 
+def test_build_optimizer_uses_adam_defaults_when_betas_is_null():
+    """Adam-family optimizers should keep their defaults when betas is unset."""
+    cfg = make_cfg()
+    cfg.training.optimizer = "adamw"
+    cfg.training.betas = None
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+
+    optimizer, decoder_params = build_optimizer(model, cfg)
+
+    assert isinstance(optimizer, torch.optim.AdamW)
+    assert decoder_params
+    assert optimizer.defaults["betas"] == (0.9, 0.999)
+
+
 def test_build_optimizer_can_switch_to_adam():
     """Optimizer builder should support Adam via config."""
     cfg = make_cfg()
     cfg.training.optimizer = "adam"
-    cfg.training.adamw_betas = [0.85, 0.97]
+    cfg.training.betas = [0.85, 0.97]
     cfg.training.adamw_eps = 1e-7
     pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
     hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
@@ -710,6 +727,57 @@ def test_build_optimizer_can_switch_to_adam():
         0.0,
         cfg.training.weight_decay,
     ]
+
+
+def test_build_optimizer_can_switch_to_lion():
+    """Optimizer builder should support Lion via config."""
+    cfg = make_cfg()
+    cfg.training.optimizer = "lion"
+    cfg.training.betas = [0.8, 0.95]
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+
+    optimizer, decoder_params = build_optimizer(model, cfg)
+
+    assert isinstance(optimizer, Lion)
+    assert decoder_params
+    assert optimizer.defaults["lr"] == cfg.training.lr
+    assert optimizer.defaults["betas"] == (0.8, 0.95)
+    assert optimizer.defaults["weight_decay"] == 0.0
+    assert [group["weight_decay"] for group in optimizer.param_groups] == [
+        0.0,
+        cfg.training.weight_decay,
+    ]
+
+
+def test_build_optimizer_uses_lion_defaults_when_betas_is_null():
+    """Lion should use its own beta defaults when betas is unset."""
+    cfg = make_cfg()
+    cfg.training.optimizer = "lion"
+    cfg.training.betas = None
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+
+    optimizer, decoder_params = build_optimizer(model, cfg)
+
+    assert isinstance(optimizer, Lion)
+    assert decoder_params
+    assert optimizer.defaults["betas"] == (0.9, 0.99)
+
+
+def test_build_optimizer_rejects_old_adamw_betas_field():
+    """The old AdamW-specific beta field should not be accepted."""
+    cfg = make_cfg()
+    cfg.training.optimizer = "adamw"
+    cfg.training.adamw_betas = [0.8, 0.95]
+    pc_ens = [PlaceCellEnsemble(8, stdev=0.35, pos_min=-1.1, pos_max=1.1, seed=0)]
+    hdc_ens = [HeadDirectionCellEnsemble(4, concentration=20.0, seed=0)]
+    model = GridCellsRNN(pc_ens, hdc_ens, **vars(cfg.model))
+
+    with pytest.raises(ValueError, match="training.adamw_betas"):
+        build_optimizer(model, cfg)
 
 
 def test_build_optimizer_can_switch_to_sgd():
@@ -1449,6 +1517,9 @@ def test_register_config_overrides_supports_shared_sections():
             "cosine",
             "--training.lr_min",
             "1e-5",
+            "--training.betas",
+            "0.8",
+            "0.95",
             "--training.first_pos_loss_multiplier",
             "50",
             "--training.grad_clip_mode",
@@ -1512,6 +1583,7 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.training__batch_size == 8
     assert args.training__lr_scheduler == "cosine"
     assert args.training__lr_min == 1e-5
+    assert args.training__betas == [0.8, 0.95]
     assert args.training__first_pos_loss_multiplier == 50.0
     assert args.training__grad_clip_mode == "norm"
     assert args.training__grad_clip_scope == "all"
@@ -1566,6 +1638,9 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "10",
             "--training.lr_gamma",
             "0.8",
+            "--training.betas",
+            "0.85",
+            "0.97",
             "--training.first_pos_loss_multiplier",
             "25",
             "--training.grad_clip_mode",
@@ -1606,6 +1681,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__lr_scheduler == "step"
     assert args.training__lr_step_size == 10
     assert args.training__lr_gamma == 0.8
+    assert args.training__betas == [0.85, 0.97]
     assert args.training__first_pos_loss_multiplier == 25.0
     assert args.training__grad_clip_mode == "value"
     assert args.training__grad_clip_scope == "decoder"
@@ -1619,6 +1695,23 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.analysis__bottleneck_activation == "raw"
     assert args.analysis__compute_linear_spatial_pca is True
     assert args.analysis__max_eval_trajectories == 16
+
+
+def test_parse_train_args_rejects_old_adamw_betas(monkeypatch):
+    """Train CLI should reject the removed AdamW-specific beta override."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train.py",
+            "--training.adamw_betas",
+            "0.8",
+            "0.95",
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        parse_train_args()
 
 
 def test_validate_cell_code_contract_warns_once_for_non_softmax():

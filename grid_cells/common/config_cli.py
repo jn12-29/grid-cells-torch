@@ -50,7 +50,7 @@ CONFIG_OVERRIDE_SPECS = {
         "lr_step_size": {"type": int},
         "lr_gamma": {"type": float},
         "momentum": {"type": float},
-        "adamw_betas": {"type": float, "nargs": 2},
+        "betas": {"type": float, "nargs": 2},
         "adamw_eps": {"type": float},
         "weight_decay": {"type": float},
         "grad_clip": {"type": float},

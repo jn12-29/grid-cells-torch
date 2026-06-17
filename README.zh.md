@@ -69,7 +69,7 @@ python generate_data.py --output data/train_small.npz --eval_output data/eval_sm
 python train.py
 
 # 或指定优化器
-python train.py --training.optimizer adam
+python train.py --training.optimizer lion
 
 # 或每完成 5 个 epoch 保存一次 periodic checkpoint
 python train.py --training.checkpoint_every 5
@@ -167,7 +167,7 @@ grid-cells-torch/
 - `config.yaml` 是默认实验入口，并支持命令行覆盖，例如 `python train.py --training.epochs 100 --training.lr 1e-3`。
 - 每次训练都会把应用 CLI 覆盖后的 effective config 保存到 `<run directory>/config.yaml`。
 - Checkpoint 当前是 save-only 产物，尚未实现从 checkpoint 恢复训练。可以用 `analyze_checkpoint.py --checkpoint <path>` 从 checkpoint 权重重新导出完整 eval/analysis 产物；默认输出到 `<run directory>/ckpt_analysis/<checkpoint_stem>/`，也可以用 `--output_dir` 指定其它目录。
-- 优化器：`training.optimizer` 支持 `rmsprop`、`adamw`、`adam` 和 `sgd`；`training.momentum` 作用于 RMSprop 和 SGD。
+- 优化器：`training.optimizer` 支持 `rmsprop`、`adamw`、`adam`、`sgd` 和 `lion`；`training.betas` 设置后作用于 Adam、AdamW 和 Lion；`training.adamw_eps` 作用于 Adam 和 AdamW；`training.momentum` 作用于 RMSprop 和 SGD。
 - 学习率调度支持 `cosine`、`step` 和 `none`；StepLR 使用 `training.lr_step_size` 和 `training.lr_gamma`。
 - 梯度裁剪使用 `training.grad_clip` 作为阈值。`training.grad_clip_mode` 支持 `value` 逐元素裁剪和 `norm` 等比缩放，`training.grad_clip_scope` 支持 `decoder` 和 `all`，`training.grad_clip_norm_type: "inf"` 表示按最大绝对梯度值做 norm clipping。训练会采样记录 `state_init`、`cell_init`、`lstm`、`bottleneck`、`pc_heads` 和 `hdc_heads` 的 per-module 梯度诊断；TensorBoard 的 step 和 epoch-mean 标量位于 `train/grad/<module>/...`，包括 norm、RMS、mean-absolute、带符号 mean、max-absolute、`pre_clip_exceed_frac`（裁剪前 `abs(grad) > abs(training.grad_clip)` 的比例）、`clip_changed_frac`、`post_clip_saturated_frac` 和 `clip_ratio`，`train.log` 会记录精简的 epoch sampled mean。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
