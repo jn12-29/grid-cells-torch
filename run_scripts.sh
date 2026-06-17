@@ -79,8 +79,11 @@ CUDA_VISIBLE_DEVICES=0 python train.py --training.lr_scheduler step --training.l
 23. Train with infinity-norm gradient clipping across all model parameters
 CUDA_VISIBLE_DEVICES=0 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
 
+24. Train with signed mean-magnitude gradient processing across all model parameters
+CUDA_VISIBLE_DEVICES=0 python train.py --training.grad_processing_mode sign_mean_abs --training.grad_clip_scope all --training.grad_clip 1e-5
+
 Monitor
 
-24. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
+25. Inspect losses, decoded metrics, and per-module gradient diagnostics in TensorBoard
 tensorboard --logdir results
 EOF

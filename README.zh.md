@@ -86,6 +86,9 @@ python train.py --training.lr_scheduler step --training.lr_step_size 10 --traini
 # 或按最大绝对梯度值等比缩放全部梯度
 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
 
+# 或把选中梯度替换成带符号的逐参数平均幅值
+python train.py --training.grad_processing_mode sign_mean_abs --training.grad_clip_scope all --training.grad_clip 1e-5
+
 # 也可以覆盖评估视频共用的动画参数
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
@@ -171,7 +174,7 @@ grid-cells-torch/
 - Checkpoint 当前是 save-only 产物，尚未实现从 checkpoint 恢复训练。可以用 `analyze_checkpoint.py --checkpoint <path>` 从 checkpoint 权重重新导出完整 eval/analysis 产物；默认输出到 `<run directory>/ckpt_analysis/<checkpoint_stem>/`，也可以用 `--output_dir` 指定其它目录。
 - 优化器：`training.optimizer` 支持 `rmsprop`、`adamw`、`adam`、`sgd` 和 `lion`；`training.betas` 设置后作用于 Adam、AdamW 和 Lion；`training.adamw_eps` 作用于 Adam 和 AdamW；`training.momentum` 作用于 RMSprop 和 SGD。
 - 学习率调度支持 `cosine`、`step` 和 `none`；StepLR 使用 `training.lr_step_size` 和 `training.lr_gamma`。
-- 梯度裁剪使用 `training.grad_clip` 作为阈值。`training.grad_clip_mode` 支持 `value` 逐元素裁剪和 `norm` 等比缩放，`training.grad_clip_scope` 支持 `decoder` 和 `all`，`training.grad_clip_norm_type: "inf"` 表示按最大绝对梯度值做 norm clipping。训练会采样记录 `state_init`、`cell_init`、`lstm`、`bottleneck`、`pc_heads` 和 `hdc_heads` 的 per-module 梯度诊断；TensorBoard 的 step 和 epoch-mean 标量位于 `train/grad/<module>/...`，包括 norm、RMS、mean-absolute、带符号 mean、max-absolute、`pre_clip_exceed_frac`（裁剪前 `abs(grad) > abs(training.grad_clip)` 的比例）、`clip_changed_frac`、`post_clip_saturated_frac` 和 `clip_ratio`，`train.log` 会记录精简的 epoch sampled mean。
+- 梯度处理使用 `training.grad_processing_mode`。`clip` 使用 `training.grad_clip_mode`（`value` 逐元素裁剪或 `norm` 等比缩放）；`sign_mean_abs` 会把选中梯度替换成带符号的逐参数平均幅值，并把 `abs(grad) <= training.grad_clip` 的元素置 0。`training.grad_clip_scope` 支持 `decoder` 和 `all`，`training.grad_clip_norm_type: "inf"` 表示按最大绝对梯度值做 norm clipping。训练会采样记录 `state_init`、`cell_init`、`lstm`、`bottleneck`、`pc_heads` 和 `hdc_heads` 的 per-module 梯度诊断；TensorBoard 的 step 和 epoch-mean 标量位于 `train/grad/<module>/...`，包括 norm、RMS、mean-absolute、带符号 mean、max-absolute、`pre_clip_exceed_frac`（处理前 `abs(grad) > abs(training.grad_clip)` 的比例）、`clip_changed_frac`、`post_clip_saturated_frac` 和 `clip_ratio`，`train.log` 会记录精简的 epoch sampled mean。
 - `train.py` 和 `generate_data.py` 现在统一使用显式的 `--section.key value` 覆盖风格。
 - `generate_data.py` 默认会在 `data/datasets/<dataset-id>/` 下生成一个完整数据集目录，写入元数据和 `cells.npz`，并同步 `data/latest/*` 作为训练默认入口。
 - `train.py --training.datadir data/datasets/<dataset-id>` 会优先加载 `<datadir>/train.npz`、`<datadir>/eval.npz` 和 `<datadir>/cells.npz`，再回退到 legacy 的 `training.data_path` 与 `training.eval_data_path` 字段。

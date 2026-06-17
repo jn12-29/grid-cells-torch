@@ -100,6 +100,7 @@ def make_cfg():
             betas=None,
             adamw_eps=1e-8,
             weight_decay=1e-5,
+            grad_processing_mode="clip",
             grad_clip=1e-5,
             grad_clip_mode="norm",
             grad_clip_scope="decoder",
@@ -372,6 +373,15 @@ def test_grad_monitor_norm_type_uses_clip_norm_type_for_norm_mode():
     assert _resolve_grad_monitor_norm_type(cfg) == float("inf")
 
 
+def test_grad_monitor_norm_type_uses_l2_for_sign_mean_abs_processing():
+    cfg = make_cfg()
+    cfg.training.grad_processing_mode = "sign_mean_abs"
+    cfg.training.grad_clip_mode = "norm"
+    cfg.training.grad_clip_norm_type = "inf"
+
+    assert _resolve_grad_monitor_norm_type(cfg) == 2.0
+
+
 @pytest.mark.parametrize(
     ("mode", "norm_type"),
     [
@@ -600,6 +610,22 @@ def test_clip_gradients_missing_mode_falls_back_to_norm():
     assert model.decoder.grad.tolist() == pytest.approx([3.0, 4.0])
 
 
+def test_clip_gradients_missing_processing_mode_falls_back_to_clip():
+    """Older configs without grad_processing_mode should keep clipping behavior."""
+    cfg = make_cfg()
+    delattr(cfg.training, "grad_processing_mode")
+    cfg.training.grad_clip = 5.0
+    cfg.training.grad_clip_mode = "value"
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([100.0, 1.0])
+    model.decoder.grad = torch.tensor([100.0, -100.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == [100.0, 1.0]
+    assert model.decoder.grad.tolist() == [5.0, -5.0]
+
+
 def test_clip_gradients_can_use_infinity_norm_across_all_params():
     """Infinity-norm clipping should rescale all selected gradients together."""
     cfg = make_cfg()
@@ -644,6 +670,52 @@ def test_clip_gradients_accepts_aliases_and_numeric_norm_type():
     assert model.decoder.grad.tolist() == [5.0, -5.0]
 
 
+def test_clip_gradients_sign_mean_abs_processes_decoder_only():
+    """Sign-mean processing should preserve the existing decoder scope."""
+    cfg = make_cfg()
+    cfg.training.grad_processing_mode = "sign_mean_abs"
+    cfg.training.grad_clip = 0.0
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([100.0, 1.0])
+    model.decoder.grad = torch.tensor([2.0, -4.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == [100.0, 1.0]
+    assert model.decoder.grad.tolist() == pytest.approx([3.0, -3.0])
+
+
+def test_clip_gradients_sign_mean_abs_respects_all_scope():
+    """All-scope sign-mean processing should use each parameter tensor's mean."""
+    cfg = make_cfg()
+    cfg.training.grad_processing_mode = "sign_mean_abs"
+    cfg.training.grad_clip = 0.0
+    cfg.training.grad_clip_scope = "all"
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([1.0, -3.0])
+    model.decoder.grad = torch.tensor([-10.0, 0.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == pytest.approx([2.0, -2.0])
+    assert model.decoder.grad.tolist() == pytest.approx([-5.0, 0.0])
+
+
+def test_clip_gradients_sign_mean_abs_zeros_small_values():
+    """Values at or below grad_clip are zeroed before optimizer.step."""
+    cfg = make_cfg()
+    cfg.training.grad_processing_mode = "sign_mean_abs"
+    cfg.training.grad_clip = 2.5
+    model = TwoParamModel()
+    model.core.grad = torch.tensor([100.0, 1.0])
+    model.decoder.grad = torch.tensor([1.0, -3.0])
+
+    _clip_gradients(model, [model.decoder], cfg)
+
+    assert model.core.grad.tolist() == [100.0, 1.0]
+    assert model.decoder.grad.tolist() == pytest.approx([0.0, -2.0])
+
+
 def test_clip_gradients_rejects_unknown_mode_and_scope():
     """Unsupported gradient clipping config should fail before optimizer.step."""
     cfg = make_cfg()
@@ -655,6 +727,12 @@ def test_clip_gradients_rejects_unknown_mode_and_scope():
     with pytest.raises(ValueError, match="Unsupported gradient clipping mode"):
         _clip_gradients(model, [model.decoder], cfg)
 
+    cfg.training.grad_processing_mode = "median"
+    cfg.training.grad_clip_mode = "value"
+    with pytest.raises(ValueError, match="Unsupported gradient processing mode"):
+        _clip_gradients(model, [model.decoder], cfg)
+
+    cfg.training.grad_processing_mode = "clip"
     cfg.training.grad_clip_mode = "value"
     cfg.training.grad_clip_scope = "heads"
     with pytest.raises(ValueError, match="Unsupported gradient clipping scope"):
@@ -1531,6 +1609,8 @@ def test_register_config_overrides_supports_shared_sections():
             "0.95",
             "--training.first_pos_loss_multiplier",
             "50",
+            "--training.grad_processing_mode",
+            "sign_mean_abs",
             "--training.grad_clip_mode",
             "norm",
             "--training.grad_clip_scope",
@@ -1597,6 +1677,7 @@ def test_register_config_overrides_supports_shared_sections():
     assert args.training__lr_min == 1e-5
     assert args.training__betas == [0.8, 0.95]
     assert args.training__first_pos_loss_multiplier == 50.0
+    assert args.training__grad_processing_mode == "sign_mean_abs"
     assert args.training__grad_clip_mode == "norm"
     assert args.training__grad_clip_scope == "all"
     assert args.training__grad_clip_norm_type == "inf"
@@ -1661,6 +1742,8 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
             "0.97",
             "--training.first_pos_loss_multiplier",
             "25",
+            "--training.grad_processing_mode",
+            "clip",
             "--training.grad_clip_mode",
             "value",
             "--training.grad_clip_scope",
@@ -1704,6 +1787,7 @@ def test_parse_train_args_supports_task_model_training_and_visualization_overrid
     assert args.training__lr_gamma == 0.8
     assert args.training__betas == [0.85, 0.97]
     assert args.training__first_pos_loss_multiplier == 25.0
+    assert args.training__grad_processing_mode == "clip"
     assert args.training__grad_clip_mode == "value"
     assert args.training__grad_clip_scope == "decoder"
     assert args.training__grad_clip_norm_type == "2.0"

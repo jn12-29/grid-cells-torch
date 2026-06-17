@@ -66,6 +66,7 @@ CONFIG_OVERRIDE_SPECS = {
         "betas": {"type": float, "nargs": 2},
         "adamw_eps": {"type": float},
         "weight_decay": {"type": float},
+        "grad_processing_mode": {"type": str},
         "grad_clip": {"type": float},
         "grad_clip_mode": {"type": str},
         "grad_clip_scope": {"type": str},

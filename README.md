@@ -85,6 +85,9 @@ python train.py --training.lr_scheduler step --training.lr_step_size 10 --traini
 # or rescale all gradients by the largest absolute gradient value
 python train.py --training.grad_clip_mode norm --training.grad_clip_scope all --training.grad_clip_norm_type inf
 
+# or replace selected gradients by signed per-parameter mean magnitudes
+python train.py --training.grad_processing_mode sign_mean_abs --training.grad_clip_scope all --training.grad_clip 1e-5
+
 # or override the shared animation config for eval videos
 python train.py --visualization.anim_num_traj 4 --visualization.anim_step 2
 
@@ -170,7 +173,7 @@ grid-cells-torch/
 - Checkpoints are save-only artifacts; training resume is not implemented yet. Use `analyze_checkpoint.py --checkpoint <path>` to rerun full eval/analysis artifacts from checkpoint weights. By default, the post-hoc output is written to `<run directory>/ckpt_analysis/<checkpoint_stem>/`; pass `--output_dir` to choose another directory.
 - Optimizers: `training.optimizer` supports `rmsprop`, `adamw`, `adam`, `sgd`, and `lion`; `training.betas` applies to Adam, AdamW, and Lion when set; `training.adamw_eps` applies to Adam and AdamW; `training.momentum` applies to RMSprop and SGD.
 - Learning-rate scheduling supports `cosine`, `step`, and `none`; StepLR uses `training.lr_step_size` and `training.lr_gamma`.
-- Gradient clipping uses `training.grad_clip` as the threshold. `training.grad_clip_mode` supports `value` elementwise clipping and `norm` proportional rescaling; `training.grad_clip_scope` supports `decoder` and `all`; `training.grad_clip_norm_type: "inf"` uses the largest absolute gradient value for norm clipping. Training logs sampled per-module gradient diagnostics for `state_init`, `cell_init`, `lstm`, `bottleneck`, `pc_heads`, and `hdc_heads`; TensorBoard receives step and epoch-mean scalars under `train/grad/<module>/...` for norm, RMS, mean-absolute, signed-mean, max-absolute, `pre_clip_exceed_frac` (`abs(grad) > abs(training.grad_clip)` before clipping), `clip_changed_frac`, `post_clip_saturated_frac`, and `clip_ratio`, while `train.log` receives compact epoch sampled means.
+- Gradient processing uses `training.grad_processing_mode`. `clip` applies `training.grad_clip_mode` (`value` elementwise clipping or `norm` proportional rescaling); `sign_mean_abs` replaces selected gradients with signed per-parameter mean magnitudes and zeros entries with `abs(grad) <= training.grad_clip`. `training.grad_clip_scope` supports `decoder` and `all`; `training.grad_clip_norm_type: "inf"` uses the largest absolute gradient value for norm clipping. Training logs sampled per-module gradient diagnostics for `state_init`, `cell_init`, `lstm`, `bottleneck`, `pc_heads`, and `hdc_heads`; TensorBoard receives step and epoch-mean scalars under `train/grad/<module>/...` for norm, RMS, mean-absolute, signed-mean, max-absolute, `pre_clip_exceed_frac` (`abs(grad) > abs(training.grad_clip)` before processing), `clip_changed_frac`, `post_clip_saturated_frac`, and `clip_ratio`, while `train.log` receives compact epoch sampled means.
 - `train.py` and `generate_data.py` now share the same explicit `--section.key value` override style for config-backed defaults.
 - `generate_data.py` defaults to creating a dataset directory under `data/datasets/<dataset-id>/`, writes dataset metadata plus `cells.npz`, and updates `data/latest/*` for the default training path.
 - `train.py --training.datadir data/datasets/<dataset-id>` loads `<datadir>/train.npz`, `<datadir>/eval.npz`, and `<datadir>/cells.npz` before falling back to the legacy `training.data_path` and `training.eval_data_path` fields.

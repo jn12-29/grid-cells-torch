@@ -48,9 +48,10 @@ training:
   betas: null # optional β1/β2 decay rates for Adam, AdamW, and Lion; null uses each optimizer's default
   adamw_eps: 1.0e-8 # Adam/AdamW ε for numerical stability in denominator
   weight_decay: 0.0
-  grad_clip: 1.0e-5 # gradient clipping threshold
+  grad_processing_mode: "clip" # "clip" uses value/norm clipping; "sign_mean_abs" replaces selected gradients with signed per-parameter mean magnitudes
+  grad_clip: 1.0e-5 # gradient clipping threshold; sign_mean_abs uses it as the small-gradient zeroing threshold
   grad_clip_mode: "value" # "norm" rescales selected gradients; "value" clamps individual gradient elements. Experiments show that set to "value" plays a decisive role in whether grid representation can emerge.
-  grad_clip_scope: "decoder" # "decoder" clips bottleneck+heads; "all" clips every trainable model parameter
+  grad_clip_scope: "decoder" # "decoder" selects bottleneck+heads; "all" selects every trainable model parameter
   grad_clip_norm_type: 2.0 # norm type for "norm" mode; set "inf" for max-absolute-value based scaling
   first_pos_loss_multiplier: 1.0 # PC timestep-0 target-loss weight; 1.0 preserves uniform time weighting
   num_workers: 4 # default DataLoader worker processes for train/eval data loading

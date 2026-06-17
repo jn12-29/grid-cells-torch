@@ -270,6 +270,14 @@ def _format_grad_monitor_log(grad_stats) -> str:
     return "; ".join(parts)
 
 
+def _normalize_grad_processing_mode(mode: str) -> str:
+    """Return the canonical gradient processing mode name."""
+    mode = str(mode).lower()
+    if mode in {"clip", "sign_mean_abs"}:
+        return mode
+    raise ValueError(f"Unsupported gradient processing mode: {mode}")
+
+
 def _normalize_grad_clip_mode(mode: str) -> str:
     """Return the canonical gradient clipping mode name."""
     mode = str(mode).lower()
@@ -302,6 +310,12 @@ def _resolve_grad_clip_norm_type(norm_type):
 
 def _resolve_grad_monitor_norm_type(cfg):
     """Return the norm type used for diagnostic gradient monitor stats."""
+    processing_mode = _normalize_grad_processing_mode(
+        getattr(cfg.training, "grad_processing_mode", "clip")
+    )
+    if processing_mode != "clip":
+        return 2.0
+
     mode = str(getattr(cfg.training, "grad_clip_mode", "norm")).lower()
     if mode in {"norm", "normclip"}:
         return _resolve_grad_clip_norm_type(
@@ -310,21 +324,46 @@ def _resolve_grad_monitor_norm_type(cfg):
     return 2.0
 
 
+def _apply_sign_mean_abs_gradients_(params, zero_threshold: float) -> None:
+    """Replace gradients with signed per-parameter mean magnitude values."""
+    with torch.no_grad():
+        for param in params:
+            if param.grad is None or param.grad.numel() <= 0:
+                continue
+
+            grad = param.grad
+            grad_abs = grad.abs()
+            mean_abs = grad_abs.mean()
+            processed = torch.where(
+                grad_abs > zero_threshold,
+                grad.sign() * mean_abs,
+                torch.zeros_like(grad),
+            )
+            grad.copy_(processed)
+
+
 def _clip_gradients(model, decoder_params, cfg) -> None:
-    """Clip gradients using the configured method and parameter scope."""
+    """Apply configured gradient processing using the selected parameter scope."""
     clip_value = float(cfg.training.grad_clip)
     if not np.isfinite(clip_value):
         raise ValueError("training.grad_clip must be finite.")
     if clip_value < 0.0:
         raise ValueError("training.grad_clip must be non-negative.")
 
-    mode = _normalize_grad_clip_mode(getattr(cfg.training, "grad_clip_mode", "norm"))
+    processing_mode = _normalize_grad_processing_mode(
+        getattr(cfg.training, "grad_processing_mode", "clip")
+    )
     params = _select_grad_clip_params(
         model,
         decoder_params,
         getattr(cfg.training, "grad_clip_scope", "decoder"),
     )
 
+    if processing_mode == "sign_mean_abs":
+        _apply_sign_mean_abs_gradients_(params, clip_value)
+        return
+
+    mode = _normalize_grad_clip_mode(getattr(cfg.training, "grad_clip_mode", "norm"))
     if mode == "value":
         torch.nn.utils.clip_grad_value_(params, clip_value)
         return
@@ -380,7 +419,8 @@ class TrainingSession:
         logger.info("Optimizer: %s", getattr(self.cfg.training, "optimizer", "rmsprop"))
         logger.info("Learning-rate scheduler: %s", getattr(self.cfg.training, "lr_scheduler", "cosine"))
         logger.info(
-            "Gradient clipping: mode=%s  scope=%s  value=%s  norm_type=%s",
+            "Gradient processing: mode=%s  clip_mode=%s  scope=%s  value=%s  norm_type=%s",
+            getattr(self.cfg.training, "grad_processing_mode", "clip"),
             getattr(self.cfg.training, "grad_clip_mode", "norm"),
             getattr(self.cfg.training, "grad_clip_scope", "decoder"),
             self.cfg.training.grad_clip,
