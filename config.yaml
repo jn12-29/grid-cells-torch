@@ -1,7 +1,7 @@
 task:
   env_size: 2.2 # environment size in meters
   n_pc: [256] # list of place cell counts (one ensemble per entry)
-  pc_scale: [0.12] # place cell Gaussian std dev in meters (one value per ensemble)
+  pc_scale: [0.01] # place cell Gaussian std dev in meters (one value per ensemble)
   # Reference-project terminology:
   # - DoS / Difference of Softmaxes: pc_target_family="difference_of_gaussians" with pc_target_normalization="global".
   # - true DoG / Difference of Gaussians: pc_target_family="true_difference_of_gaussians".
